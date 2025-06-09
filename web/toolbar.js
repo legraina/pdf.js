@@ -138,6 +138,18 @@ class Toolbar {
           },
         },
       },
+      {
+        element: options.editorEraserButton,
+        eventName: "switchannotationeditormode",
+        eventDetails: {
+          get mode() {
+            const { classList } = options.editorEraserButton;
+            return classList.contains("toggled")
+              ? AnnotationEditorType.NONE
+              : AnnotationEditorType.ERASER;
+          },
+        },
+      },
     ];
 
     // Bind the event listeners for click and various other actions.
@@ -309,6 +321,7 @@ class Toolbar {
       editorInkParamsToolbar,
       editorStampButton,
       editorStampParamsToolbar,
+      editorEraserButton,
     } = this.#opts;
 
     toggleCheckedBtn(
@@ -331,12 +344,17 @@ class Toolbar {
       mode === AnnotationEditorType.STAMP,
       editorStampParamsToolbar
     );
+    toggleCheckedBtn(
+      editorEraserButton,
+      mode === AnnotationEditorType.ERASER
+    )
 
     const isDisable = mode === AnnotationEditorType.DISABLE;
     editorFreeTextButton.disabled = isDisable;
     editorHighlightButton.disabled = isDisable;
     editorInkButton.disabled = isDisable;
     editorStampButton.disabled = isDisable;
+    editorEraserButton.disabled = isDisable;
   }
 
   #updateUIState(resetNumPages = false) {

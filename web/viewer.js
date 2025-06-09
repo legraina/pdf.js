@@ -93,6 +93,7 @@ function getViewerConfiguration() {
       editorInkButton: document.getElementById("editorInk"),
       editorInkParamsToolbar: document.getElementById("editorInkParamsToolbar"),
       editorStampButton: document.getElementById("editorStamp"),
+      editorEraserButton: document.getElementById("editorEraser"),
       presentationModeButton: document.getElementById("presentationMode"), // #1807 modified by ngx-extended-pdf-viewer
       editorStampParamsToolbar: document.getElementById(
         "editorStampParamsToolbar"
