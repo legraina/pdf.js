@@ -172,6 +172,13 @@ class AnnotationEditorLayer {
         this.togglePointerEvents(false);
         this.disableClick();
         break;
+      case AnnotationEditorType.ERASER:
+        this.addEraserEditorIfNeeded(false);
+
+        this.disableTextSelection();
+        this.togglePointerEvents(true);
+        this.disableClick();
+        break;
       default:
         this.disableTextSelection();
         this.togglePointerEvents(true);
@@ -210,6 +217,24 @@ class AnnotationEditorLayer {
       }
     }
 
+    const editor = this.createAndAddNewEditor(
+      { offsetX: 0, offsetY: 0 },
+      /* isCentered = */ false
+    );
+    editor.setInBackground();
+  }
+  addEraserEditorIfNeeded(isCommitting){
+    if(this.#uiManager.getMode() !== AnnotationEditorType.ERASER){
+      return;
+    }
+    if(!isCommitting){
+      for (const editor of this.#editors.values()) {
+        if (editor.isEmpty()) {
+          editor.setInBackground();
+          return;
+        }
+      }
+    }
     const editor = this.createAndAddNewEditor(
       { offsetX: 0, offsetY: 0 },
       /* isCentered = */ false
