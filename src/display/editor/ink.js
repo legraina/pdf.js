@@ -95,7 +95,6 @@ class InkEditor extends AnnotationEditor {
 
   constructor(params) {
     super({ ...params, name: "inkEditor" });
-    console.log("Ink editor constructor called");
     this.color = params.color || null;
     this.thickness = params.thickness || null;
     this.opacity = params.opacity || null;
@@ -880,6 +879,7 @@ class InkEditor extends AnnotationEditor {
 
   /** @inheritdoc */
   render() {
+    console.log("Ink editor render()")
     if (this.div) {
       return this.div;
     }
