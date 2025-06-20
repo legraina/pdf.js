@@ -96,7 +96,7 @@ export class EraserEditor extends AnnotationEditor{
 
     /** @inheritdoc */
     rebuild(){
-      console.log("rebuild called")
+      console.log("rebuild() called")
       if(!this.parent){
         return;
       }
@@ -113,12 +113,14 @@ export class EraserEditor extends AnnotationEditor{
         this.parent.add(this);
         this.#setCanvasDims();
       }
-      // this.#fitToContent();
+      if (this.div.classList.contains("editing") && !this.isInEditMode()) {
+        this.enableEditMode();
+      }
     }
 
     /** @inheritdoc */
     remove(){
-      console.log("remove called")
+      console.log("remove called");
       if(this._eraserCursor){
         this._eraserCursor.remove();
         this._eraserCursor = null;
@@ -155,8 +157,12 @@ export class EraserEditor extends AnnotationEditor{
           this._eraserCursor = null;
         }
         this._uiManager.removeShouldRescale(this);
-      } else if (this.parent && parent === null) {
+      } 
+      else if (this.parent && parent === null) {
           this._uiManager.addShouldRescale(this);
+      }
+      if (parent && this.div?.classList.contains("editing")) {
+        this.enableEditMode();
       }
       super.setParent(parent);
     }
@@ -253,6 +259,7 @@ export class EraserEditor extends AnnotationEditor{
     }
 
     #getInitialBBox(){
+      console.log("#getInitialBBox() called");
       const {
         parentRotation,
         parentDimensions: [width, height],
@@ -344,7 +351,6 @@ export class EraserEditor extends AnnotationEditor{
         this.#isCanvasInitialized = true;
         this.#setCanvasDims();
         this.setDims(this.width * parentWidth, this.height * parentHeight);
-        this.#redraw();
         this.div.classList.add("disabled");
       } else {
         this.div.classList.add("editing");
@@ -383,23 +389,6 @@ export class EraserEditor extends AnnotationEditor{
       this.canvas.width = roundedWidth;
       this.canvas.height = roundedHeight;
       this.#updateTransform();
-    }
-
-    #redraw() {
-      console.log("#redraw called");
-      if (this.isEmpty()) {
-        this.#updateTransform();
-        return;
-      }
-
-      const { canvas, ctx } = this;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      this.#updateTransform();
-
-      for (const path of this.bezierPath2D) {
-        ctx.stroke(path);
-      }
     }
 
     #updateTransform() {
@@ -451,11 +440,6 @@ export class EraserEditor extends AnnotationEditor{
         this._uiManager._signal.addEventListener(
           "abort",
           () => {
-            if(this._eraserCursor){
-              this._eraserCursor.remove();
-              this._eraserCursor = null;
-            }
-
             this.#observer?.disconnect();
             this.#observer = null;
           },
@@ -494,6 +478,11 @@ export class EraserEditor extends AnnotationEditor{
         this._eraserCursor.style.display = 'none';
       }
     }
+    /** @override */
+    commitOrRemove(){
+      console.log("EraserEditor: commitOrRemove overridden to prevent removal");
+      this.commit();
+    }
     
     /**
      * onpointerdown callback for the canvas we're erasing on.
@@ -503,7 +492,6 @@ export class EraserEditor extends AnnotationEditor{
       if (event.button !== 0 || !this.isInEditMode() || this.#disableEditing || this.editorPointerType !== PointerType.current){
         return;
       }
-      // this.setInForeground() (Implement)
       event.preventDefault();
 
       if(!this.div.contains(document.activeElement)){
@@ -555,11 +543,12 @@ export class EraserEditor extends AnnotationEditor{
     // TODO
 
     commit(){
+      console.log("commit() called")
       if(this.#disableEditing){
         return;
       }
-      
-      this.isEditing = false;
-      this.disableEditMode();
+      if(this._eraserCursor){
+        this._eraserCursor.style.display = 'none';
+      }
     }
 }
