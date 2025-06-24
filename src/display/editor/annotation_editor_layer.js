@@ -938,6 +938,7 @@ class AnnotationEditorLayer {
       }
     }
     this.addInkEditorIfNeeded(/* isCommitting = */ false);
+    this.addEraserEditorIfNeeded(/* isCommitting = */ false);
   }
 
   /**
