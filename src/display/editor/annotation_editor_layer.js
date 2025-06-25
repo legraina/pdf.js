@@ -959,6 +959,8 @@ class AnnotationEditorLayer {
     this.#isCleaningUp = isCleaningUp;
   }
   // #1825 end of modification by ngx-extended-pdf-viewer
+  getEditors(){
+    return Array.from(this.#editors.values());
+  }
 }
-
 export { AnnotationEditorLayer };

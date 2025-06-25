@@ -1,6 +1,7 @@
 import { AnnotationEditor } from "./editor.js";
 import { AnnotationEditorType } from "../../shared/util.js";
 import { noContextMenu } from "../display_utils.js";
+import { InkEditor } from "./ink.js";
 
 class PointerType {
   static current = null;
@@ -42,7 +43,7 @@ export class EraserEditor extends AnnotationEditor{
 
     #boundCanvasTouchMove = this.canvasTouchMove.bind(this);
 
-    static _defaultThickness = 10;
+    static _defaultThickness = 20;
 
     static _type = "eraser";
 
@@ -230,7 +231,6 @@ export class EraserEditor extends AnnotationEditor{
     }
 
     #startErasing(x, y){
-      console.log("startErasing");
       const signal = this._uiManager._signal;
       this.canvas.addEventListener("contextmenu", noContextMenu, { signal });
       this.canvas.addEventListener("pointerleave", this.#boundCanvasPointerLeave, { signal });
@@ -244,16 +244,22 @@ export class EraserEditor extends AnnotationEditor{
 
       this.isEditing = true;
 
-      // TODO: Implement erasing logic
+      this.#erase(x,y);
     }
 
     #erase(x, y){
-      console.log("Erase");
       // TODO: Implement actual erasing logic
+      const inkEditors = this.#getInkEditors();
+      const eraserRadius = EraserEditor._defaultThickness / 2;
+
+      for(const inkEditor of inkEditors){
+        if(this.#checkInkCollision(inkEditor, x, y, eraserRadius)){
+          inkEditor.remove();
+        }
+      }
     }
 
     #endErasing(event){
-      console.log("endErasing");
       this.canvas.removeEventListener("pointerleave", this.#boundCanvasPointerLeave);
       this.canvas.removeEventListener("pointermove", this.#boundCanvasPointermove);
       this.canvas.removeEventListener("pointerup", this.#boundCanvasPointerup);
@@ -337,6 +343,34 @@ export class EraserEditor extends AnnotationEditor{
       }
     }
 
+    #getInkEditors(){
+      if(!this.parent.getEditors()){
+        return [];
+      }
+
+      const allEditors = this.parent.getEditors();
+      return allEditors.filter(editor => {
+        return editor instanceof InkEditor
+      });
+    }
+
+    #checkInkCollision(inkEditor, eraserX, eraserY, eraserRadius){
+      if(!inkEditor || inkEditor.isEmpty() || !inkEditor.canvas){
+        return false;
+      }
+      const inkRect = inkEditor.div.getBoundingClientRect();
+      const eraserRect = this.canvas.getBoundingClientRect();
+      
+      const relativeX = eraserX + eraserRect.left - inkRect.left;
+      const relativeY = eraserY + eraserRect.top - inkRect.top;
+
+      if(relativeX < 0 || relativeY < 0 || 
+        relativeX > inkRect.width || relativeY > inkRect.height){
+          return false;
+      }
+      return true;
+    }
+
     // called on every pointermove while eraser is active
     _updateCursor(evt) {
       if(!this._eraserCursor) return;
@@ -380,7 +414,6 @@ export class EraserEditor extends AnnotationEditor{
           preventScroll: true,
         })
       }
-
       this.#startErasing(event.offsetX, event.offsetY)
     }
 
@@ -421,9 +454,6 @@ export class EraserEditor extends AnnotationEditor{
       // disable default scroll behaviour on touch move
       event.preventDefault();
     }
-
-
-    // TODO
 
     commit(){
       if(this.#disableEditing){
