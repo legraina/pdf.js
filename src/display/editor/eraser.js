@@ -253,8 +253,8 @@ export class EraserEditor extends AnnotationEditor{
       const eraserRadius = EraserEditor._defaultThickness / 2;
 
       for(const inkEditor of inkEditors){
-        if(this.#checkInkCollision(inkEditor, x, y, eraserRadius)){
-          inkEditor.remove();
+        if(this.#checkInkBoxCollision(inkEditor, x, y, eraserRadius)){
+          this.#eraseInkEditor(inkEditor, x, y, eraserRadius);
         }
       }
     }
@@ -354,7 +354,9 @@ export class EraserEditor extends AnnotationEditor{
       });
     }
 
-    #checkInkCollision(inkEditor, eraserX, eraserY, eraserRadius){
+    
+
+    #checkInkBoxCollision(inkEditor, eraserX, eraserY, eraserRadius){
       if(!inkEditor || inkEditor.isEmpty() || !inkEditor.canvas){
         return false;
       }
@@ -368,7 +370,134 @@ export class EraserEditor extends AnnotationEditor{
         relativeX > inkRect.width || relativeY > inkRect.height){
           return false;
       }
-      return true;
+      return true; 
+    }
+
+    #eraseInkEditor(inkEditor, eraserX, eraserY,  eraserRadius){
+      
+
+      // Erase visually
+      this.#eraseFromCanvas(inkEditor, eraserX, eraserY, eraserRadius);
+
+      // Erase from annotation data
+      const modified = this.#eraseFromPaths(inkEditor, eraserX, eraserY, eraserRadius);
+
+      if(modified){
+        
+        if(inkEditor.paths.length === 0){
+          inkEditor.remove();
+        }
+      }
+    }
+
+    #eraseFromCanvas(inkEditor, x, y, eraserRadius){
+      if(!inkEditor.canvas || !inkEditor.ctx){
+        return;
+      }
+
+      const ctx = inkEditor.ctx;
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.beginPath();
+      ctx.arc(x, y, eraserRadius, 0, Math.PI * 2, false);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    #eraseFromPaths(inkEditor, x, y, eraserRadius){
+      if(!inkEditor.paths || inkEditor.paths.length == 0){
+        return false;
+      }
+
+      let modified = false;
+      const radius2 = Math.pow(eraserRadius, 2);
+      const newPaths = [];
+      
+      for(let pathIndex = 0; pathIndex < inkEditor.paths.length; pathIndex++){
+        const bezierPath = inkEditor.paths[pathIndex];
+        const newPathSegments = this.#erasePointsFromBezierPath(bezierPath, x, y, radius2);
+
+        if(newPathSegments === undefined){
+          newPaths.push(bezierPath);
+        }
+        else{
+          modified = true;
+          newPaths.push(...newPathSegments);
+        }
+      }
+
+      if(modified){
+        inkEditor.paths = newPaths;
+        // Update bezierPath2D for visual rendering
+        inkEditor.bezierPath2D = newPaths.map(path => this.#buildPath2DFromBezier(path));
+        // Update raw path
+        inkEditor.allRawPaths = this.#convertBezierPathsToRawPaths(newPaths);
+      }
+      return modified
+    }
+
+    #erasePointsFromBezierPath(bezierPath, centerX, centerY, radius2){
+      const newPaths = [];
+      let currentPath = [];
+      let modified = false;
+
+      for(let i = 0; i < bezierPath.length; i++){
+        const [first, control1, control2, second] = bezierPath[i];
+        
+        const pointsToCheck = [first, control1, control2, second];
+        let segmentErased = false;
+        
+        for(const [x,y] of pointsToCheck){
+          const dist = Math.pow(x - centerX, 2) + Math.pow(y - centerY, 2);
+          if(dist < radius2){
+            segmentErased = true;
+            modified = true;
+            break;
+          }
+        }
+        if(!segmentErased){
+          currentPath.push(bezierPath[i]);
+        }
+        else{
+          if(currentPath.length > 0){
+            newPaths.push(currentPath);
+            currentPath = [];
+          }
+        }
+      }
+      if(currentPath.length > 0){
+        newPaths.push(currentPath);
+      }
+      return modified ? newPaths : undefined;
+    }
+
+    #buildPath2DFromBezier(bezierPath){
+      const path2D = new Path2D();
+      for(let i = 0; i < bezierPath.length; i++){
+        const [first, control1, control2, second] = bezierPath[i];
+        if(i === 0){
+          path2D.moveTo(...first);
+        }
+        path2D.bezierCurveTo(
+          control1[0], control1[1],
+          control2[0], control2[1],
+          second[0], second[1],
+        );
+      }
+      return path2D;
+    }
+
+    #convertBezierPathsToRawPaths(bezierPaths) {
+      return bezierPaths.map(bezierPath => {
+        const rawPath = [];
+        for (const [first, , , second] of bezierPath) {
+          if (rawPath.length === 0) {
+            rawPath.push(first);
+          }
+          rawPath.push(second);
+        }
+        return rawPath;
+      });
     }
 
     // called on every pointermove while eraser is active
