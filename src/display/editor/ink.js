@@ -108,6 +108,7 @@ class InkEditor extends AnnotationEditor {
     this.y = 0;
     this._willKeepAspectRatio = true;
     this.editorPointerType = null;
+    this.modified = false;
   }
 
   destroy() {
@@ -535,8 +536,10 @@ class InkEditor extends AnnotationEditor {
   #stopDrawing(x, y) {
     this.#requestFrameCallback = null;
 
-    x = Math.min(Math.max(x, 0), this.canvas.width);
-    y = Math.min(Math.max(y, 0), this.canvas.height);
+    if(!this.modified){
+      x = Math.min(Math.max(x, 0), this.canvas.width);
+      y = Math.min(Math.max(y, 0), this.canvas.height);
+    }
 
     this.#draw(x, y);
     this.#endPath();
@@ -838,6 +841,40 @@ class InkEditor extends AnnotationEditor {
     this.setInBackground();
   }
 
+  recreatePaths() {
+        this.#redraw();
+        console.log("recreatePaths()");
+        if(!this.allRawPaths || this.allRawPaths.length === 0){
+          return false;
+        }
+        console.log(this);
+
+        const newRawPaths = this.allRawPaths;
+        this.allRawPaths = [];
+        this.paths = [];
+        this.bezierPath2D = [];
+
+        for (const path of newRawPaths) {
+          if (path.length <= 1) {
+            continue;
+          }
+          this.currentPath = [path[0]];
+          this.#currentPath2D = new Path2D();
+          for(let i = 1; i < path.length - 1; i++){
+            const [x, y] = path[i];
+            this.#draw(x, y);
+          }
+          const [lastX, lastY] = path[path.length-1];
+          this.#stopDrawing(lastX, lastY);
+        }
+        // TODO: check if override
+        this.addToAnnotationStorage();
+        this.#redraw();
+        console.log(this);
+        this.modified = false;
+        return true
+    }
+
   /**
    * Create the canvas element.
    */
@@ -879,7 +916,6 @@ class InkEditor extends AnnotationEditor {
 
   /** @inheritdoc */
   render() {
-    console.log("Ink editor render()")
     if (this.div) {
       return this.div;
     }

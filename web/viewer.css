@@ -592,16 +592,20 @@ body {
   inset-inline-end: calc(var(--editor-toolbar-base-offset) + 0px);
 }
 
-#editorInkParamsToolbar {
+#editorEraserParamsToolbar{
   inset-inline-end: calc(var(--editor-toolbar-base-offset) + 28px);
 }
 
-#editorFreeTextParamsToolbar {
+#editorInkParamsToolbar {
   inset-inline-end: calc(var(--editor-toolbar-base-offset) + 56px);
 }
 
-#editorHighlightParamsToolbar {
+#editorFreeTextParamsToolbar {
   inset-inline-end: calc(var(--editor-toolbar-base-offset) + 84px);
+}
+
+#editorHighlightParamsToolbar {
+  inset-inline-end: calc(var(--editor-toolbar-base-offset) + 112px);
 }
 
 #editorStampAddImage::before {

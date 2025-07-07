@@ -92,6 +92,7 @@ const AnnotationEditorParamsType = {
   INK_COLOR: 21,
   INK_THICKNESS: 22,
   INK_OPACITY: 23,
+  ERASER_THICKNESS: 24, 
   HIGHLIGHT_COLOR: 31,
   HIGHLIGHT_DEFAULT_COLOR: 32,
   HIGHLIGHT_THICKNESS: 33,
@@ -157,6 +158,7 @@ const AnnotationType = {
   WATERMARK: 24,
   THREED: 25,
   REDACT: 26,
+  ERASER: 27,
 };
 
 const AnnotationReplyType = {

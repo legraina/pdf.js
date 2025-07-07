@@ -1,5 +1,5 @@
 import { AnnotationEditor } from "./editor.js";
-import { AnnotationEditorType } from "../../shared/util.js";
+import { AnnotationEditorParamsType, AnnotationEditorType } from "../../shared/util.js";
 import { noContextMenu } from "../display_utils.js";
 import { InkEditor } from "./ink.js";
 
@@ -52,6 +52,10 @@ export class EraserEditor extends AnnotationEditor{
     constructor(params){
         super({ ...params, name: "eraserEditor" });
         
+        this.thickness = params.thickness || EraserEditor._defaultThickness;
+        
+        this.radius = this.thickness / 2;
+        
         this.editorPointerType = null;
 
         this._updateCursor = this._updateCursor.bind(this);
@@ -64,6 +68,79 @@ export class EraserEditor extends AnnotationEditor{
         this._eraserCursor.remove();
         this._eraserCursor = null;
       }
+    }
+
+    /** @inheritdoc */
+    static initialize(l10n, uiManager) {
+      AnnotationEditor.initialize(l10n, uiManager);
+    }
+    
+    /** @inheritdoc */
+    static updateDefaultParams(type, value){
+      switch(type){
+        case AnnotationEditorParamsType.ERASER_THICKNESS:
+          EraserEditor._defaultThickness = value;
+          break;
+      }
+    }
+
+    /** @inheritdoc */
+    updateParams(type, value){
+      switch(type){
+        case AnnotationEditorParamsType.ERASER_THICKNESS:
+          this.#updateThickness(value);
+          break;
+      }
+    }
+
+    /** @inheritdoc */
+    static get defaultPropertiesToUpdate(){
+      return [
+        [AnnotationEditorParamsType.ERASER_THICKNESS, EraserEditor._defaultThickness],
+      ];
+    }
+
+    /** @inheritdoc */
+    get propertiesToUpdate(){
+      return [
+        [
+          AnnotationEditorParamsType.ERASER_THICKNESS,
+          this.thickness || EraserEditor._defaultThickness,
+        ],
+      ];
+    }
+
+    #updateThickness(thickness){
+      const setThickness = th => {
+        this.thickness = th;
+        this.radius = th / 2;
+
+        if(this._eraserCursor){
+        this._eraserCursor.style.width = `${th}px`;
+        this._eraserCursor.style.height = `${th}px`;
+        }
+      };
+
+      const savedThickness = this.thickness;
+
+      this.addCommands({
+      cmd: setThickness.bind(this, thickness),
+      undo: setThickness.bind(this, savedThickness),
+      post: this._uiManager.updateUI.bind(this._uiManager, this),
+      mustExec: true,
+      type: AnnotationEditorParamsType.ERASER_THICKNESS,
+      overwriteIfSameType: true,
+      keepUndo: true,
+    });
+    // #2256 modified by ngx-extended-pdf-viewer
+    this.eventBus?.dispatch("annotation-editor-event", {
+      source: this,
+      type: "thicknessChanged",
+      page: this.pageIndex + 1,
+      editorType: this.constructor.name,
+      value: thickness,
+      previousValue: savedThickness,
+    });
     }
 
     setParent(parent) {
@@ -80,6 +157,7 @@ export class EraserEditor extends AnnotationEditor{
     onScaleChanging() {
       // Update canvas dimensions when scale changes
       this.#updateCanvasSize();
+
     }
 
     initializePointerType(){
@@ -158,7 +236,8 @@ export class EraserEditor extends AnnotationEditor{
       if (!this._eraserCursor) {
         this._eraserCursor = document.createElement('div');
         this._eraserCursor.className = 'eraserCursor';
-
+        this._eraserCursor.style.width = `${this.thickness}px`;
+        this._eraserCursor.style.height = `${this.thickness}px`;
         document.body.appendChild(this._eraserCursor);
       }
 
@@ -248,13 +327,11 @@ export class EraserEditor extends AnnotationEditor{
     }
 
     #erase(x, y){
-      // TODO: Implement actual erasing logic
+      
       const inkEditors = this.#getInkEditors();
-      const eraserRadius = EraserEditor._defaultThickness / 2;
-
       for(const inkEditor of inkEditors){
-        if(this.#checkInkBoxCollision(inkEditor, x, y, eraserRadius)){
-          this.#eraseInkEditor(inkEditor, x, y, eraserRadius);
+        if(this.#checkInkBoxCollision(inkEditor, x, y)){
+          const modified = this.#eraseInkEditor(inkEditor, x, y);
         }
       }
     }
@@ -267,7 +344,9 @@ export class EraserEditor extends AnnotationEditor{
       this.canvas.addEventListener("pointerdown", this.#boundCanvasPointerdown, { signal: this._uiManager._signal });
 
       this.isEditing = false;
-      // TODO: Complete erasing logic
+      this.#recreatePaths();
+      
+      this.canvas.removeEventListener("contextmenu", noContextMenu);
     }
 
 
@@ -354,9 +433,8 @@ export class EraserEditor extends AnnotationEditor{
       });
     }
 
-    
-
-    #checkInkBoxCollision(inkEditor, eraserX, eraserY, eraserRadius){
+  
+    #checkInkBoxCollision(inkEditor, eraserX, eraserY){
       if(!inkEditor || inkEditor.isEmpty() || !inkEditor.canvas){
         return false;
       }
@@ -373,24 +451,25 @@ export class EraserEditor extends AnnotationEditor{
       return true; 
     }
 
-    #eraseInkEditor(inkEditor, eraserX, eraserY,  eraserRadius){
+    #eraseInkEditor(inkEditor, eraserX, eraserY){
       
 
       // Erase visually
-      this.#eraseFromCanvas(inkEditor, eraserX, eraserY, eraserRadius);
+      this.#eraseFromCanvas(inkEditor, eraserX, eraserY);
 
       // Erase from annotation data
-      const modified = this.#eraseFromPaths(inkEditor, eraserX, eraserY, eraserRadius);
+      const modified = this.#eraseFromPaths(inkEditor, eraserX, eraserY);
 
       if(modified){
-        
-        if(inkEditor.paths.length === 0){
+        if(inkEditor.allRawPaths.length === 0){
           inkEditor.remove();
         }
       }
+
+      return modified;
     }
 
-    #eraseFromCanvas(inkEditor, x, y, eraserRadius){
+    #eraseFromCanvas(inkEditor, x, y){
       if(!inkEditor.canvas || !inkEditor.ctx){
         return;
       }
@@ -399,105 +478,61 @@ export class EraserEditor extends AnnotationEditor{
       ctx.save();
       ctx.globalCompositeOperation = "destination-out";
       ctx.beginPath();
-      ctx.arc(x, y, eraserRadius, 0, Math.PI * 2, false);
+      ctx.arc(x, y, this.radius, 0, Math.PI * 2, false);
       ctx.fill();
       ctx.restore();
     }
 
-    #eraseFromPaths(inkEditor, x, y, eraserRadius){
-      if(!inkEditor.paths || inkEditor.paths.length == 0){
+    #eraseFromPaths(inkEditor, centerX, centerY){
+      if(!inkEditor.allRawPaths || inkEditor.allRawPaths.length === 0){
         return false;
       }
 
-      let modified = false;
-      const radius2 = Math.pow(eraserRadius, 2);
+      // remove parts of the points => transform it in several paths
       const newPaths = [];
-      
-      for(let pathIndex = 0; pathIndex < inkEditor.paths.length; pathIndex++){
-        const bezierPath = inkEditor.paths[pathIndex];
-        const newPathSegments = this.#erasePointsFromBezierPath(bezierPath, x, y, radius2);
-
-        if(newPathSegments === undefined){
-          newPaths.push(bezierPath);
-        }
-        else{
-          modified = true;
-          newPaths.push(...newPathSegments);
-        }
-      }
-
-      if(modified){
-        inkEditor.paths = newPaths;
-        // Update bezierPath2D for visual rendering
-        inkEditor.bezierPath2D = newPaths.map(path => this.#buildPath2DFromBezier(path));
-        // Update raw path
-        inkEditor.allRawPaths = this.#convertBezierPathsToRawPaths(newPaths);
-      }
-      return modified
-    }
-
-    #erasePointsFromBezierPath(bezierPath, centerX, centerY, radius2){
-      const newPaths = [];
-      let currentPath = [];
+      let radius2 = Math.pow(this.radius / (this.parentScale), 2);
       let modified = false;
 
-      for(let i = 0; i < bezierPath.length; i++){
-        const [first, control1, control2, second] = bezierPath[i];
-        
-        const pointsToCheck = [first, control1, control2, second];
-        let segmentErased = false;
-        
-        for(const [x,y] of pointsToCheck){
-          const dist = Math.pow(x - centerX, 2) + Math.pow(y - centerY, 2);
-          if(dist < radius2){
-            segmentErased = true;
+      for (let path of inkEditor.allRawPaths) {
+        let newPath = [];
+        for (let [x, y] of path) {
+          // check if point is inside eraser radius
+          let dist = Math.pow(x-centerX, 2) + Math.pow(y-centerY, 2);
+          if (dist >= radius2) {
+            // Point is outside eraser radius
+            newPath.push([x, y]);
+          } else {
+            // Point is inside eraser radius
             modified = true;
-            break;
+            // Save the current path segment if it has enough points
+            if (newPath.length > 1) {
+              newPaths.push([...newPath]);
+              newPath = [];
+            }
           }
         }
-        if(!segmentErased){
-          currentPath.push(bezierPath[i]);
-        }
-        else{
-          if(currentPath.length > 0){
-            newPaths.push(currentPath);
-            currentPath = [];
-          }
+        // Add the final path segment if it wasn't erased and has enough points
+        if (newPath.length > 1) {
+          newPaths.push([...newPath]);
         }
       }
-      if(currentPath.length > 0){
-        newPaths.push(currentPath);
+
+      if (modified) {
+        inkEditor.allRawPaths = newPaths;
+        inkEditor.modified = modified;
       }
-      return modified ? newPaths : undefined;
+
+
+      return modified;
     }
 
-    #buildPath2DFromBezier(bezierPath){
-      const path2D = new Path2D();
-      for(let i = 0; i < bezierPath.length; i++){
-        const [first, control1, control2, second] = bezierPath[i];
-        if(i === 0){
-          path2D.moveTo(...first);
+    #recreatePaths() {
+      const inkEditors = this.#getInkEditors();
+      for(const inkEditor of inkEditors){
+        if(inkEditor.modified){
+          inkEditor.recreatePaths();
         }
-        path2D.bezierCurveTo(
-          control1[0], control1[1],
-          control2[0], control2[1],
-          second[0], second[1],
-        );
       }
-      return path2D;
-    }
-
-    #convertBezierPathsToRawPaths(bezierPaths) {
-      return bezierPaths.map(bezierPath => {
-        const rawPath = [];
-        for (const [first, , , second] of bezierPath) {
-          if (rawPath.length === 0) {
-            rawPath.push(first);
-          }
-          rawPath.push(second);
-        }
-        return rawPath;
-      });
     }
 
     // called on every pointermove while eraser is active
@@ -509,8 +544,8 @@ export class EraserEditor extends AnnotationEditor{
       const y = rect.top  + evt.offsetY;
 
       this._eraserCursor.style.display = 'block';
-      this._eraserCursor.style.left = `${x}px`;
-      this._eraserCursor.style.top  = `${y}px`;
+      this._eraserCursor.style.left = `${x - this.thickness/2}px`;
+      this._eraserCursor.style.top  = `${y - this.thickness/2}px`;
     }
 
     _showCursor(){

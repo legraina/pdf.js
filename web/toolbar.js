@@ -322,6 +322,7 @@ class Toolbar {
       editorStampButton,
       editorStampParamsToolbar,
       editorEraserButton,
+      editorEraserParamsToolbar,
     } = this.#opts;
 
     toggleCheckedBtn(
@@ -346,7 +347,8 @@ class Toolbar {
     );
     toggleCheckedBtn(
       editorEraserButton,
-      mode === AnnotationEditorType.ERASER
+      mode === AnnotationEditorType.ERASER,
+      editorEraserParamsToolbar
     )
 
     const isDisable = mode === AnnotationEditorType.DISABLE;

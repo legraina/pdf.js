@@ -27,6 +27,7 @@ import { AnnotationEditorParamsType } from "pdfjs-lib";
  * @property {HTMLButtonElement} editorStampAddImage
  * @property {HTMLInputElement} editorFreeHighlightThickness
  * @property {HTMLButtonElement} editorHighlightShowAll
+ * @property {HTMLInputElement} editorEraserThickness
  */
 
 class AnnotationEditorParams {
@@ -51,6 +52,7 @@ class AnnotationEditorParams {
     editorStampAddImage,
     editorFreeHighlightThickness,
     editorHighlightShowAll,
+    editorEraserThickness,
   }) {
     const dispatchEvent = (typeStr, value) => {
       this.eventBus.dispatch("switchannotationeditorparams", {
@@ -85,6 +87,9 @@ class AnnotationEditorParams {
       this.setAttribute("aria-pressed", !checked);
       dispatchEvent("HIGHLIGHT_SHOW_ALL", !checked);
     });
+    editorEraserThickness.addEventListener("input", function () {
+      dispatchEvent("ERASER_THICKNESS", this.valueAsNumber);
+    });
 
     this.eventBus._on("annotationeditorparamschanged", evt => {
       for (const [type, value] of evt.details) {
@@ -112,6 +117,9 @@ class AnnotationEditorParams {
             break;
           case AnnotationEditorParamsType.HIGHLIGHT_SHOW_ALL:
             editorHighlightShowAll.setAttribute("aria-pressed", value);
+            break;
+          case AnnotationEditorParamsType.ERASER_THICKNESS:
+            editorEraserThickness.value = value;
             break;
         }
       }
