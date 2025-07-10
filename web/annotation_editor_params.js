@@ -24,6 +24,7 @@ import { AnnotationEditorParamsType } from "pdfjs-lib";
  * @property {HTMLInputElement} editorInkColor
  * @property {HTMLInputElement} editorInkThickness
  * @property {HTMLInputElement} editorInkOpacity
+ * @property {HTMLButtonElement} editorInkEraseMode
  * @property {HTMLButtonElement} editorStampAddImage
  * @property {HTMLInputElement} editorFreeHighlightThickness
  * @property {HTMLButtonElement} editorHighlightShowAll
@@ -52,7 +53,8 @@ class AnnotationEditorParams {
     editorStampAddImage,
     editorFreeHighlightThickness,
     editorHighlightShowAll,
-    editorEraserThickness,
+    editorInkEraseMode,
+    // editorEraserThickness,
   }) {
     const dispatchEvent = (typeStr, value) => {
       this.eventBus.dispatch("switchannotationeditorparams", {
@@ -87,9 +89,14 @@ class AnnotationEditorParams {
       this.setAttribute("aria-pressed", !checked);
       dispatchEvent("HIGHLIGHT_SHOW_ALL", !checked);
     });
-    editorEraserThickness.addEventListener("input", function () {
-      dispatchEvent("ERASER_THICKNESS", this.valueAsNumber);
+    editorInkEraseMode.addEventListener("click", function () {
+      const checked = this.getAttribute("aria-pressed") === "true";
+      this.setAttribute("aria-pressed", !checked);
+      dispatchEvent("INK_ERASE_MODE", !checked);
     });
+    // editorEraserThickness.addEventListener("input", function () {
+    //   dispatchEvent("ERASER_THICKNESS", this.valueAsNumber);
+    // });
 
     this.eventBus._on("annotationeditorparamschanged", evt => {
       for (const [type, value] of evt.details) {
@@ -109,6 +116,9 @@ class AnnotationEditorParams {
           case AnnotationEditorParamsType.INK_OPACITY:
             editorInkOpacity.value = value;
             break;
+          case AnnotationEditorParamsType.INK_ERASE_MODE:
+            editorInkEraseMode.setAttribute("aria-pressed", value);
+            break;
           case AnnotationEditorParamsType.HIGHLIGHT_THICKNESS:
             editorFreeHighlightThickness.value = value;
             break;
@@ -118,9 +128,9 @@ class AnnotationEditorParams {
           case AnnotationEditorParamsType.HIGHLIGHT_SHOW_ALL:
             editorHighlightShowAll.setAttribute("aria-pressed", value);
             break;
-          case AnnotationEditorParamsType.ERASER_THICKNESS:
-            editorEraserThickness.value = value;
-            break;
+          // case AnnotationEditorParamsType.ERASER_THICKNESS:
+          //   editorEraserThickness.value = value;
+          //   break;
         }
       }
     });

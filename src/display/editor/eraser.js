@@ -331,7 +331,7 @@ export class EraserEditor extends AnnotationEditor{
       const inkEditors = this.#getInkEditors();
       for(const inkEditor of inkEditors){
         if(this.#checkInkBoxCollision(inkEditor, x, y)){
-          const modified = this.#eraseInkEditor(inkEditor, x, y);
+          inkEditor.erase(x, y, this.radius);
         }
       }
     }
@@ -451,80 +451,7 @@ export class EraserEditor extends AnnotationEditor{
       return true; 
     }
 
-    #eraseInkEditor(inkEditor, eraserX, eraserY){
-      
 
-      // Erase visually
-      this.#eraseFromCanvas(inkEditor, eraserX, eraserY);
-
-      // Erase from annotation data
-      const modified = this.#eraseFromPaths(inkEditor, eraserX, eraserY);
-
-      if(modified){
-        if(inkEditor.allRawPaths.length === 0){
-          inkEditor.remove();
-        }
-      }
-
-      return modified;
-    }
-
-    #eraseFromCanvas(inkEditor, x, y){
-      if(!inkEditor.canvas || !inkEditor.ctx){
-        return;
-      }
-
-      const ctx = inkEditor.ctx;
-      ctx.save();
-      ctx.globalCompositeOperation = "destination-out";
-      ctx.beginPath();
-      ctx.arc(x, y, this.radius, 0, Math.PI * 2, false);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    #eraseFromPaths(inkEditor, centerX, centerY){
-      if(!inkEditor.allRawPaths || inkEditor.allRawPaths.length === 0){
-        return false;
-      }
-
-      // remove parts of the points => transform it in several paths
-      const newPaths = [];
-      let radius2 = Math.pow(this.radius / (this.parentScale), 2);
-      let modified = false;
-
-      for (let path of inkEditor.allRawPaths) {
-        let newPath = [];
-        for (let [x, y] of path) {
-          // check if point is inside eraser radius
-          let dist = Math.pow(x-centerX, 2) + Math.pow(y-centerY, 2);
-          if (dist >= radius2) {
-            // Point is outside eraser radius
-            newPath.push([x, y]);
-          } else {
-            // Point is inside eraser radius
-            modified = true;
-            // Save the current path segment if it has enough points
-            if (newPath.length > 1) {
-              newPaths.push([...newPath]);
-              newPath = [];
-            }
-          }
-        }
-        // Add the final path segment if it wasn't erased and has enough points
-        if (newPath.length > 1) {
-          newPaths.push([...newPath]);
-        }
-      }
-
-      if (modified) {
-        inkEditor.allRawPaths = newPaths;
-        inkEditor.modified = modified;
-      }
-
-
-      return modified;
-    }
 
     #recreatePaths() {
       const inkEditors = this.#getInkEditors();
