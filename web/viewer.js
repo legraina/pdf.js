@@ -93,8 +93,7 @@ function getViewerConfiguration() {
       editorInkButton: document.getElementById("editorInk"),
       editorInkParamsToolbar: document.getElementById("editorInkParamsToolbar"),
       editorStampButton: document.getElementById("editorStamp"),
-      editorEraserButton: document.getElementById("editorEraser"),
-      editorEraserParamsToolbar: document.getElementById("editorEraserParamsToolbar"),
+      // editorEraserParamsToolbar: document.getElementById("editorEraserParamsToolbar"),
       presentationModeButton: document.getElementById("presentationMode"), // #1807 modified by ngx-extended-pdf-viewer
       editorStampParamsToolbar: document.getElementById(
         "editorStampParamsToolbar"
@@ -202,7 +201,8 @@ function getViewerConfiguration() {
       editorInkColor: document.getElementById("editorInkColor"),
       editorInkThickness: document.getElementById("editorInkThickness"),
       editorInkOpacity: document.getElementById("editorInkOpacity"),
-      editorEraserThickness: document.getElementById("editorEraserThickness"),
+      editorInkEraseMode: document.getElementById("editorInkEraseMode"),
+      // editorEraserThickness: document.getElementById("editorEraserThickness"),
       editorStampAddImage: document.getElementById("editorStampAddImage"),
       editorFreeHighlightThickness: document.getElementById(
         "editorFreeHighlightThickness"

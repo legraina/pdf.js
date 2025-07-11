@@ -80,7 +80,7 @@ const AnnotationEditorType = {
   HIGHLIGHT: 9,
   STAMP: 13,
   INK: 15,
-  ERASER: 20,
+  // ERASER: 20,
 };
 
 const AnnotationEditorParamsType = {
@@ -92,7 +92,8 @@ const AnnotationEditorParamsType = {
   INK_COLOR: 21,
   INK_THICKNESS: 22,
   INK_OPACITY: 23,
-  ERASER_THICKNESS: 24, 
+  INK_ERASE_MODE: 25,
+  ERASER_THICKNESS: 26, 
   HIGHLIGHT_COLOR: 31,
   HIGHLIGHT_DEFAULT_COLOR: 32,
   HIGHLIGHT_THICKNESS: 33,

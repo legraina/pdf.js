@@ -1673,6 +1673,8 @@ class AnnotationEditorUIManager {
         (this.#showAllStates ||= new Map()).set(type, value);
         this.showAllEditors("highlight", value);
         break;
+      case AnnotationEditorParamsType.INK_ERASE_MODE:
+        this.updateAllInkEditors("ink", value);
     }
 
     for (const editor of this.#selectedEditors) {
@@ -1683,6 +1685,14 @@ class AnnotationEditorUIManager {
       editorType.updateDefaultParams(type, value);
     }
   }
+  updateAllInkEditors(type, value){
+    for(const editor of this.#allEditors.values()){
+      if(editor.editorType === type){
+        editor.updateEraseMode(value);
+      }
+    }
+  }
+
 
   showAllEditors(type, visible, updateButton = false) {
     for (const editor of this.#allEditors.values()) {

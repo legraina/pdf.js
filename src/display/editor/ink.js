@@ -83,11 +83,17 @@ class InkEditor extends AnnotationEditor {
 
   #requestFrameCallback = null;
 
+  _eraserCursor = null;
+
+  #eraserRadius = 20;
+
   static _defaultColor = null;
 
   static _defaultOpacity = 1;
 
   static _defaultThickness = 1;
+
+  static _isEraseMode = false;
 
   static _type = "ink";
 
@@ -98,6 +104,7 @@ class InkEditor extends AnnotationEditor {
     this.color = params.color || null;
     this.thickness = params.thickness || null;
     this.opacity = params.opacity || null;
+    this.erase_Mode = params.erase_Mode || null;
     this.paths = [];
     this.bezierPath2D = [];
     this.allRawPaths = [];
@@ -144,6 +151,9 @@ class InkEditor extends AnnotationEditor {
       case AnnotationEditorParamsType.INK_OPACITY:
         InkEditor._defaultOpacity = value / 100;
         break;
+      case AnnotationEditorParamsType.INK_ERASE_MODE:
+        InkEditor._isEraseMode = value;
+        break;
     }
   }
 
@@ -159,6 +169,9 @@ class InkEditor extends AnnotationEditor {
       case AnnotationEditorParamsType.INK_OPACITY:
         this.#updateOpacity(value);
         break;
+      case AnnotationEditorParamsType.INK_ERASE_MODE:
+        this.updateEraseMode(value);
+        break;
     }
   }
 
@@ -173,6 +186,10 @@ class InkEditor extends AnnotationEditor {
       [
         AnnotationEditorParamsType.INK_OPACITY,
         Math.round(InkEditor._defaultOpacity * 100),
+      ],
+      [
+        AnnotationEditorParamsType.INK_ERASE_MODE,
+        InkEditor._isEraseMode,
       ],
     ];
   }
@@ -193,6 +210,10 @@ class InkEditor extends AnnotationEditor {
       [
         AnnotationEditorParamsType.INK_OPACITY,
         Math.round(100 * (this.opacity ?? InkEditor._defaultOpacity)),
+      ],
+      [
+        AnnotationEditorParamsType.INK_ERASE_MODE,
+        InkEditor._isEraseMode,
       ],
     ];
   }
@@ -289,6 +310,85 @@ class InkEditor extends AnnotationEditor {
       previousValue: savedOpacity,
     });
     // #2256 end of modification by ngx-extended-pdf-viewer
+  }
+
+  updateEraseMode(enableErasing){
+    if(InkEditor._isEraseMode === enableErasing) return;
+
+    InkEditor._isEraseMode = enableErasing;
+
+    if(InkEditor._isEraseMode){
+      this.#enableErasing();
+    }
+    else{
+      this.#disableErasing();
+    }
+
+    this.eventBus?.dispatch("annotation-editor-event", {
+      source: this,
+      type: "EraserModeChanged",
+      page: this.pageIndex + 1,
+      editorType: this.constructor.name,
+      value: enableErasing,
+      previousValue: !enableErasing,
+    });
+  }
+
+  #enableErasing(){
+    if (!this.canvas) return;
+    
+
+    this.canvas.style.cursor = 'none';
+  
+    if (!this._eraserCursor) {
+      this._eraserCursor = document.createElement('div');
+      this._eraserCursor.className = 'eraserCursor';
+      this._eraserCursor.style.display = 'block';
+      this._eraserCursor.style.width = `${this.#eraserRadius * 2}px`;
+      this._eraserCursor.style.height = `${this.#eraserRadius * 2}px`;
+      document.body.appendChild(this._eraserCursor);
+
+      document.addEventListener('pointermove', this.#updateEraserCursor);
+      document.addEventListener('pointerenter', this.#showEraserCursor);
+      document.addEventListener('pointerleave', this.#hideEraserCursor);
+    }
+    this.parent.div.classList.remove("inkEditing");
+    this.parent.div.classList.add("eraserEditing");
+  }
+
+  #disableErasing(){
+    if (this._eraserCursor) {
+      this._eraserCursor.remove();
+      this._eraserCursor = null;
+    }
+    if (this.canvas) {
+      this.canvas.style.cursor = '';
+      document.removeEventListener('pointermove', this.#updateEraserCursor);
+      document.removeEventListener('pointerenter', this.#showEraserCursor);
+      document.removeEventListener('pointerleave', this.#hideEraserCursor);
+    }
+
+    this.parent.div.classList.remove("eraserEditing");
+    this.parent.div.classList.add("inkEditing");
+  }
+
+  #updateEraserCursor = (evt) => {
+    if(!this._eraserCursor) return;
+
+    this._eraserCursor.style.left = `${evt.clientX - this.#eraserRadius}px`;
+    this._eraserCursor.style.top  = `${evt.clientY - this.#eraserRadius}px`;
+  }
+
+  #showEraserCursor = () => {
+    if(this._eraserCursor && InkEditor._isEraseMode) {
+      this._eraserCursor.style.display = 'block';
+    }
+  }
+
+  #hideEraserCursor = () => {
+    if(this._eraserCursor) {
+      this._eraserCursor.style.display = 'none';
+    }
   }
 
   /** @inheritdoc */
@@ -396,6 +496,7 @@ class InkEditor extends AnnotationEditor {
   /** @inheritdoc */
   onceAdded() {
     this._isDraggable = !this.isEmpty();
+    // this.#updateEraseMode(InkEditor._isEraseMode);
   }
 
   /** @inheritdoc */
@@ -703,6 +804,110 @@ class InkEditor extends AnnotationEditor {
       ctx.stroke(path);
     }
   }
+  #startErasing(x, y){
+    const signal = this._uiManager._signal;
+    this.canvas.addEventListener("contextmenu", noContextMenu, { signal });
+    this.canvas.addEventListener("pointerleave", this.#boundCanvasPointerleave, { signal });
+    this.canvas.addEventListener("pointermove", this.#boundCanvasPointermove, { signal });
+    this.canvas.addEventListener("pointerup", this.#boundCanvasPointerup, { signal });
+    this.canvas.addEventListener("touchmove", this.#boundCanvasTouchMove, {
+      signal: this._uiManager._signal,
+      passive: false,
+    });
+    this.canvas.removeEventListener("pointerdown", this.#boundCanvasPointerdown);
+
+    this.isEditing = true;
+    this.#erase(x,y);
+  }
+
+  #erase(x, y){
+    // this.radius = radius;
+    const previousPaths = this.allRawPaths;
+
+    // Erase visually
+    this.#eraseFromCanvas(x, y);
+
+    // Erase Point
+    const modified = this.#eraseFromPaths(x, y);
+
+    if(modified & this.allRawPaths.length === 0){
+      this.remove();
+    }
+    return modified;
+  }
+
+  #endErasing(){
+    this.canvas.removeEventListener("pointerleave", this.#boundCanvasPointerleave);
+    this.canvas.removeEventListener("pointermove", this.#boundCanvasPointermove);
+    this.canvas.removeEventListener("pointerup", this.#boundCanvasPointerup);
+    this.canvas.removeEventListener("touchmove", this.#boundCanvasTouchMove);
+    this.canvas.addEventListener("pointerdown", this.#boundCanvasPointerdown, { signal: this._uiManager._signal });
+
+    this.isEditing = false;
+    if(this.modified){
+      this.#recreatePaths();
+    }
+    
+    this.canvas.removeEventListener("contextmenu", noContextMenu);
+  }
+
+  #eraseFromPaths( centerX, centerY){
+      if(!this.allRawPaths || this.allRawPaths.length === 0){
+        return false;
+      }
+      this.radius = 10;
+
+      // remove parts of the points => transform it in several paths
+      const newPaths = [];
+      let radius2 = Math.pow(this.radius / this.parentScale, 2);
+      let modified = false;
+
+      for (let path of this.allRawPaths) {
+        let newPath = [];
+        for (let [x, y] of path) {
+          // check if point is inside eraser radius
+          let dist = Math.pow(x-centerX, 2) + Math.pow(y-centerY, 2);
+          if (dist >= radius2) {
+            // Point is outside eraser radius
+            newPath.push([x, y]);
+          } else {
+            // Point is inside eraser radius
+            modified = true;
+            // Save the current path segment if it has enough points
+            if (newPath.length > 1) {
+              newPaths.push([...newPath]);
+              newPath = [];
+            }
+          }
+        }
+        // Add the final path segment if it wasn't erased and has enough points
+        if (newPath.length > 1) {
+          newPaths.push([...newPath]);
+        }
+      }
+
+      if (modified) {
+        this.allRawPaths = newPaths;
+        this.modified = modified;
+      }
+
+
+      return modified;
+    }
+
+    #eraseFromCanvas(x, y){
+      if(!this.canvas || !this.ctx){
+        return;
+      }
+      this.radius = 10;
+      const ctx = this.ctx;
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.beginPath();
+      ctx.arc(x, y, this.radius, 0, Math.PI * 2, false);
+      ctx.fill();
+      ctx.restore();
+    }
 
   /**
    * Commit the curves we have in this editor.
@@ -765,8 +970,12 @@ class InkEditor extends AnnotationEditor {
         preventScroll: true /* See issue #17327 */,
       });
     }
-
-    this.#startDrawing(event.offsetX, event.offsetY);
+    if(InkEditor._isEraseMode){
+      this.#startErasing(event.offsetX, event.offsetY);
+    }
+    else{
+      this.#startDrawing(event.offsetX, event.offsetY);
+    }
   }
 
   /**
@@ -775,7 +984,12 @@ class InkEditor extends AnnotationEditor {
    */
   canvasPointermove(event) {
     event.preventDefault();
-    this.#draw(event.offsetX, event.offsetY);
+    if(InkEditor._isEraseMode){
+      this.#erase(event.offsetX, event.offsetY);
+    }
+    else{
+      this.#draw(event.offsetX, event.offsetY);
+    }
   }
 
   /**
@@ -784,7 +998,12 @@ class InkEditor extends AnnotationEditor {
    */
   canvasPointerup(event) {
     event.preventDefault();
-    this.#endDrawing(event);
+    if(InkEditor._isEraseMode){
+      this.#endErasing();
+    }
+    else{
+      this.#endDrawing(event);
+    }
   }
 
   /**
@@ -792,7 +1011,12 @@ class InkEditor extends AnnotationEditor {
    * @param {PointerEvent} event
    */
   canvasPointerleave(event) {
-    this.#endDrawing(event);
+    if(InkEditor._isEraseMode){
+      this.#endErasing();
+    }
+    else{
+      this.#endDrawing(event);
+    }
   }
 
   canvasTouchMove(event) {
@@ -841,81 +1065,13 @@ class InkEditor extends AnnotationEditor {
     this.setInBackground();
   }
 
-  erase(x, y, eraserRadius){
-    // Erase visually
-    this.#eraseFromCanvas(x, y, eraserRadius);
-
-    const modified = this.#eraseFromPaths(x, y, eraserRadius);
-
-    if(modified){
-      if(this.allRawPaths === 0){
-        this.remove();
-      }
-    }
-  }
-
-  #eraseFromCanvas(x, y, eraserRadius){
-    if(!this.canvas || !this.ctx){
-      return;
-    }
-
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.beginPath();
-    ctx.arc(x, y, eraserRadius, 0, Math.PI * 2, false);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  #eraseFromPaths(centerX, centerY, eraserRadius){
-    if(!this.allRawPaths || this.allRawPaths.length === 0){
-      return false;
-    }
-
-    // remove parts of the points => transform it in several paths
-    const newPaths = [];
-    let radius2 = Math.pow(eraserRadius / this.parentScale, 2);
-    let modified = false;
-
-    for (let path of this.allRawPaths) {
-      let newPath = [];
-      for (let [x, y] of path) {
-        // check if point is inside eraser radius
-        let dist = Math.pow(x-centerX, 2) + Math.pow(y-centerY, 2);
-        if (dist >= radius2) {
-          // Point is outside eraser radius
-          newPath.push([x, y]);
-        } else {
-          // Point is inside eraser radius
-          modified = true;
-          // Save the current path segment if it has enough points
-          if (newPath.length > 1) {
-            newPaths.push([...newPath]);
-            newPath = [];
-          }
-        }
-      }
-      // Add the final path segment if it wasn't erased and has enough points
-      if (newPath.length > 1) {
-        newPaths.push([...newPath]);
-      }
-    }
-
-    if (modified) {
-      this.allRawPaths = newPaths;
-      this.modified = modified;
-    }
-
-
-    return modified;
-  }
-  
   recreatePaths() {
-    this.#redraw();
-    if(!this.allRawPaths || this.allRawPaths.length === 0){
-      return false;
-    }
+        this.#redraw();
+        console.log("recreatePaths()");
+        if(!this.allRawPaths || this.allRawPaths.length === 0){
+          return false;
+        }
+        console.log(this);
 
     const newRawPaths = this.allRawPaths;
     this.allRawPaths = [];

@@ -23,7 +23,7 @@
 /** @typedef {import("../annotation_layer.js").AnnotationLayer} AnnotationLayer */
 /** @typedef {import("../draw_layer.js").DrawLayer} DrawLayer */
 
-import { AnnotationEditorType, FeatureTest } from "../../shared/util.js";
+import { AnnotationEditorParamsType, AnnotationEditorType, FeatureTest } from "../../shared/util.js";
 import { AnnotationEditor } from "./editor.js";
 import { FreeTextEditor } from "./freetext.js";
 import { HighlightEditor } from "./highlight.js";
@@ -166,6 +166,12 @@ class AnnotationEditorLayer {
         this.disableTextSelection();
         this.togglePointerEvents(true);
         this.disableClick();
+        for (const editor of this.#editors.values()){
+          if(editor instanceof InkEditor){
+            editor.updateParams(AnnotationEditorParamsType.INK_ERASE_MODE, InkEditor._isEraseMode);
+          }
+        }
+
         break;
       case AnnotationEditorType.HIGHLIGHT:
         this.enableTextSelection();
