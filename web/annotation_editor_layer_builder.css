@@ -159,6 +159,7 @@
 }
 
 .annotationEditorLayer.eraserEditing{
+  cursor: none;
   > div:not(.eraserEditor){
     pointer-events: none;
   }

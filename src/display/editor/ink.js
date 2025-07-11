@@ -83,7 +83,7 @@ class InkEditor extends AnnotationEditor {
 
   #requestFrameCallback = null;
 
-  #eraserCursor = null;
+  _eraserCursor = null;
 
   #eraserRadius = 20;
 
@@ -153,7 +153,6 @@ class InkEditor extends AnnotationEditor {
         break;
       case AnnotationEditorParamsType.INK_ERASE_MODE:
         InkEditor._isEraseMode = value;
-        const allEditors = this._uiManager.getEditors();
         break;
     }
   }
@@ -171,7 +170,7 @@ class InkEditor extends AnnotationEditor {
         this.#updateOpacity(value);
         break;
       case AnnotationEditorParamsType.INK_ERASE_MODE:
-        this.#updateEraseMode(value);
+        this.updateEraseMode(value);
         break;
     }
   }
@@ -313,7 +312,7 @@ class InkEditor extends AnnotationEditor {
     // #2256 end of modification by ngx-extended-pdf-viewer
   }
 
-  #updateEraseMode(enableErasing){
+  updateEraseMode(enableErasing){
     if(InkEditor._isEraseMode === enableErasing) return;
 
     InkEditor._isEraseMode = enableErasing;
@@ -338,60 +337,58 @@ class InkEditor extends AnnotationEditor {
   #enableErasing(){
     if (!this.canvas) return;
     
-    this._isDraggable = false;
 
     this.canvas.style.cursor = 'none';
   
-    if (!this.#eraserCursor) {
-      this.#eraserCursor = document.createElement('div');
-      this.#eraserCursor.className = 'eraserCursor';
-      this.#eraserCursor.style.display = 'block';
-      this.#eraserCursor.style.width = `${this.#eraserRadius * 2}px`;
-      this.#eraserCursor.style.height = `${this.#eraserRadius * 2}px`;
-      const editorLayer = this.parent.div;
-      editorLayer.appendChild(this.#eraserCursor);
+    if (!this._eraserCursor) {
+      this._eraserCursor = document.createElement('div');
+      this._eraserCursor.className = 'eraserCursor';
+      this._eraserCursor.style.display = 'block';
+      this._eraserCursor.style.width = `${this.#eraserRadius * 2}px`;
+      this._eraserCursor.style.height = `${this.#eraserRadius * 2}px`;
+      document.body.appendChild(this._eraserCursor);
+
+      document.addEventListener('pointermove', this.#updateEraserCursor);
+      document.addEventListener('pointerenter', this.#showEraserCursor);
+      document.addEventListener('pointerleave', this.#hideEraserCursor);
     }
-    
-    this.canvas.addEventListener('pointermove', this.#updateEraserCursor);
-    this.canvas.addEventListener('pointerenter', this.#showEraserCursor);
-    this.canvas.addEventListener('pointerleave', this.#hideEraserCursor);
+    this.parent.div.classList.remove("inkEditing");
+    this.parent.div.classList.add("eraserEditing");
   }
 
   #disableErasing(){
-    if (this.#eraserCursor) {
-      this.#eraserCursor.remove();
-      this.#eraserCursor = null;
+    if (this._eraserCursor) {
+      this._eraserCursor.remove();
+      this._eraserCursor = null;
     }
-  
     if (this.canvas) {
       this.canvas.style.cursor = '';
-      this.canvas.removeEventListener('pointermove', this.#updateEraserCursor);
-      this.canvas.removeEventListener('pointerenter', this.#showEraserCursor);
-      this.canvas.removeEventListener('pointerleave', this.#hideEraserCursor);
+      document.removeEventListener('pointermove', this.#updateEraserCursor);
+      document.removeEventListener('pointerenter', this.#showEraserCursor);
+      document.removeEventListener('pointerleave', this.#hideEraserCursor);
     }
+
+    this.parent.div.classList.remove("eraserEditing");
+    this.parent.div.classList.add("inkEditing");
   }
 
   #updateEraserCursor = (evt) => {
-    if(!this.#eraserCursor) return;
+    if(!this._eraserCursor) return;
 
-    const rect = this.canvas.getBoundingClientRect();
-    const x = rect.left + evt.offsetX;
-    const y = rect.top  + evt.offsetY;
-
-    this._eraserCursor.style.left = `${x - this.#eraserRadius/2}px`;
-    this._eraserCursor.style.top  = `${y - this.#eraserRadius/2}px`;
+    this._eraserCursor.style.left = `${evt.clientX - this.#eraserRadius}px`;
+    this._eraserCursor.style.top  = `${evt.clientY - this.#eraserRadius}px`;
   }
 
   #showEraserCursor = () => {
-    if(this.#eraserCursor && InkEditor._isEraseMode) {
-      this.#eraserCursor.style.display = 'block';
+    if(this._eraserCursor && InkEditor._isEraseMode) {
+      this._eraserCursor.style.display = 'block';
     }
   }
 
   #hideEraserCursor = () => {
-  if(this.#eraserCursor) {
-    this.#eraserCursor.style.display = 'none';
-  }
+    if(this._eraserCursor) {
+      this._eraserCursor.style.display = 'none';
+    }
   }
 
   /** @inheritdoc */
