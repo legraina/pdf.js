@@ -841,39 +841,106 @@ class InkEditor extends AnnotationEditor {
     this.setInBackground();
   }
 
-  recreatePaths() {
-        this.#redraw();
-        console.log("recreatePaths()");
-        if(!this.allRawPaths || this.allRawPaths.length === 0){
-          return false;
-        }
-        console.log(this);
+  erase(x, y, eraserRadius){
+    // Erase visually
+    this.#eraseFromCanvas(x, y, eraserRadius);
 
-        const newRawPaths = this.allRawPaths;
-        this.allRawPaths = [];
-        this.paths = [];
-        this.bezierPath2D = [];
+    const modified = this.#eraseFromPaths(x, y, eraserRadius);
 
-        for (const path of newRawPaths) {
-          if (path.length <= 1) {
-            continue;
-          }
-          this.currentPath = [path[0]];
-          this.#currentPath2D = new Path2D();
-          for(let i = 1; i < path.length - 1; i++){
-            const [x, y] = path[i];
-            this.#draw(x, y);
-          }
-          const [lastX, lastY] = path[path.length-1];
-          this.#stopDrawing(lastX, lastY);
-        }
-        // TODO: check if override
-        this.addToAnnotationStorage();
-        this.#redraw();
-        console.log(this);
-        this.modified = false;
-        return true
+    if(modified){
+      if(this.allRawPaths === 0){
+        this.remove();
+      }
     }
+  }
+
+  #eraseFromCanvas(x, y, eraserRadius){
+    if(!this.canvas || !this.ctx){
+      return;
+    }
+
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.beginPath();
+    ctx.arc(x, y, eraserRadius, 0, Math.PI * 2, false);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  #eraseFromPaths(centerX, centerY, eraserRadius){
+    if(!this.allRawPaths || this.allRawPaths.length === 0){
+      return false;
+    }
+
+    // remove parts of the points => transform it in several paths
+    const newPaths = [];
+    let radius2 = Math.pow(eraserRadius / this.parentScale, 2);
+    let modified = false;
+
+    for (let path of this.allRawPaths) {
+      let newPath = [];
+      for (let [x, y] of path) {
+        // check if point is inside eraser radius
+        let dist = Math.pow(x-centerX, 2) + Math.pow(y-centerY, 2);
+        if (dist >= radius2) {
+          // Point is outside eraser radius
+          newPath.push([x, y]);
+        } else {
+          // Point is inside eraser radius
+          modified = true;
+          // Save the current path segment if it has enough points
+          if (newPath.length > 1) {
+            newPaths.push([...newPath]);
+            newPath = [];
+          }
+        }
+      }
+      // Add the final path segment if it wasn't erased and has enough points
+      if (newPath.length > 1) {
+        newPaths.push([...newPath]);
+      }
+    }
+
+    if (modified) {
+      this.allRawPaths = newPaths;
+      this.modified = modified;
+    }
+
+
+    return modified;
+  }
+  
+  recreatePaths() {
+    this.#redraw();
+    if(!this.allRawPaths || this.allRawPaths.length === 0){
+      return false;
+    }
+
+    const newRawPaths = this.allRawPaths;
+    this.allRawPaths = [];
+    this.paths = [];
+    this.bezierPath2D = [];
+
+    for (const path of newRawPaths) {
+      if (path.length <= 1) {
+        continue;
+      }
+      this.currentPath = [path[0]];
+      this.#currentPath2D = new Path2D();
+      for(let i = 1; i < path.length - 1; i++){
+        const [x, y] = path[i];
+        this.#draw(x, y);
+      }
+      const [lastX, lastY] = path[path.length-1];
+      this.#stopDrawing(lastX, lastY);
+    }
+    // TODO: check if override
+    this.addToAnnotationStorage();
+    this.#redraw();
+    this.modified = false;
+    return true
+  }
 
   /**
    * Create the canvas element.
