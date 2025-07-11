@@ -845,7 +845,7 @@ class InkEditor extends AnnotationEditor {
 
     this.isEditing = false;
     if(this.modified){
-      this.#recreatePaths();
+      this.recreatePaths();
     }
     
     this.canvas.removeEventListener("contextmenu", noContextMenu);
