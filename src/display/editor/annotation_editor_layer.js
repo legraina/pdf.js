@@ -166,11 +166,6 @@ class AnnotationEditorLayer {
         this.disableTextSelection();
         this.togglePointerEvents(true);
         this.disableClick();
-        for (const editor of this.#editors.values()){
-          if(editor instanceof InkEditor){
-            editor.updateParams(AnnotationEditorParamsType.INK_ERASE_MODE, InkEditor._isEraseMode);
-          }
-        }
 
         break;
       case AnnotationEditorType.HIGHLIGHT:

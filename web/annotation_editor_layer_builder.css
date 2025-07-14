@@ -160,9 +160,37 @@
 
 .annotationEditorLayer.eraserEditing{
   cursor: none;
-  > div:not(.eraserEditor){
-    pointer-events: none;
-  }
+}
+
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor) {
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor) .editToolbar {
+  display: none;
+}
+
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor)::before,
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor)::after {
+  content: none;
+  border: none;
+  outline: none;
+}
+
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor):hover:not(.selectedEditor) {
+  border: none;
+  outline: none;
+}
+
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor).selectedEditor {
+  border: none;
+  outline: none;
+}
+
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor) > .resizers {
+  display: none ;
 }
 
 .annotationEditorLayer :is(.freeTextEditor, .inkEditor, .stampEditor) {

@@ -313,9 +313,9 @@ class InkEditor extends AnnotationEditor {
   }
 
   updateEraseMode(enableErasing){
-    if(InkEditor._isEraseMode === enableErasing) return;
 
     InkEditor._isEraseMode = enableErasing;
+    this._isDraggable = false;
 
     if(InkEditor._isEraseMode){
       this.#enableErasing();
@@ -339,7 +339,7 @@ class InkEditor extends AnnotationEditor {
     
 
     this.canvas.style.cursor = 'none';
-  
+
     if (!this._eraserCursor) {
       this._eraserCursor = document.createElement('div');
       this._eraserCursor.className = 'eraserCursor';
@@ -349,11 +349,17 @@ class InkEditor extends AnnotationEditor {
       document.body.appendChild(this._eraserCursor);
 
       document.addEventListener('pointermove', this.#updateEraserCursor);
-      document.addEventListener('pointerenter', this.#showEraserCursor);
-      document.addEventListener('pointerleave', this.#hideEraserCursor);
+      this.parent.div.addEventListener('pointerenter', this.#showEraserCursor);
+      this.parent.div.addEventListener('pointerleave', this.#hideEraserCursor);
+
+      const annotationLayers = document.querySelectorAll('.annotationEditorLayer');
+      for (const layer of annotationLayers) {
+        layer.addEventListener('pointerenter', this.#showEraserCursor);
+        layer.addEventListener('pointerleave', this.#hideEraserCursor);
+        layer.classList.remove("inkEditing");
+        layer.classList.add("eraserEditing");
+      }
     }
-    this.parent.div.classList.remove("inkEditing");
-    this.parent.div.classList.add("eraserEditing");
   }
 
   #disableErasing(){
@@ -363,13 +369,19 @@ class InkEditor extends AnnotationEditor {
     }
     if (this.canvas) {
       this.canvas.style.cursor = '';
-      document.removeEventListener('pointermove', this.#updateEraserCursor);
-      document.removeEventListener('pointerenter', this.#showEraserCursor);
-      document.removeEventListener('pointerleave', this.#hideEraserCursor);
+      document.body.removeEventListener('pointermove', this.#updateEraserCursor);
+      this.parent.div.removeEventListener('pointerenter', this.#showEraserCursor);
+      this.parent.div.removeEventListener('pointerleave', this.#hideEraserCursor);
+
+      const annotationLayers = document.querySelectorAll('.annotationEditorLayer');
+      for (const layer of annotationLayers) {
+        layer.removeEventListener('pointerenter', this.#showEraserCursor);
+        layer.removeEventListener('pointerleave', this.#hideEraserCursor);
+        layer.classList.remove("eraserEditing");
+        layer.classList.add("inkEditing");
+      }
     }
 
-    this.parent.div.classList.remove("eraserEditing");
-    this.parent.div.classList.add("inkEditing");
   }
 
   #updateEraserCursor = (evt) => {
@@ -496,7 +508,7 @@ class InkEditor extends AnnotationEditor {
   /** @inheritdoc */
   onceAdded() {
     this._isDraggable = !this.isEmpty();
-    // this.#updateEraseMode(InkEditor._isEraseMode);
+    this.updateEraseMode(InkEditor._isEraseMode);
   }
 
   /** @inheritdoc */
