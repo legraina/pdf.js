@@ -160,37 +160,42 @@
 
 .annotationEditorLayer.eraserEditing{
   cursor: none;
+  --focus-outline: none;
+  --unfocus-outline: none;
+  --focus-outline-around: none;
+  --hover-outline: none;
+  --hover-outline-around: none;
 }
 
-.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor) {
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor, .highlightEditor) {
   border: none;
   outline: none;
   box-shadow: none;
 }
 
-.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor) .editToolbar {
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor, .highlightEditor) .editToolbar {
   display: none;
 }
 
-.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor)::before,
-.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor)::after {
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor, .highlightEditor)::before,
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor, .highlightEditor)::after {
   content: none;
   border: none;
   outline: none;
 }
 
-.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor):hover:not(.selectedEditor) {
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor, .highlightEditor):hover:not(.selectedEditor) {
   border: none;
   outline: none;
 }
 
-.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor).selectedEditor {
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor, .highlightEditor).selectedEditor {
   border: none;
   outline: none;
 }
 
-.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor) > .resizers {
-  display: none ;
+.annotationEditorLayer.eraserEditing :is(.freeTextEditor, .inkEditor, .stampEditor, .highlightEditor) > .resizers {
+  display: none;
 }
 
 .annotationEditorLayer :is(.freeTextEditor, .inkEditor, .stampEditor) {
