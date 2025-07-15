@@ -83,7 +83,7 @@ class InkEditor extends AnnotationEditor {
 
   #requestFrameCallback = null;
 
-  _eraserCursor = null;
+  // _eraserCursor = null;
 
   #eraserRadius = 20;
 
@@ -98,6 +98,8 @@ class InkEditor extends AnnotationEditor {
   static _type = "ink";
 
   static _editorType = AnnotationEditorType.INK;
+
+  static editorPointerType = null;
 
   constructor(params) {
     super({ ...params, name: "inkEditor" });
@@ -114,7 +116,7 @@ class InkEditor extends AnnotationEditor {
     this.x = 0;
     this.y = 0;
     this._willKeepAspectRatio = true;
-    this.editorPointerType = null;
+    // this.editorPointerType = null;
     this.modified = false;
   }
 
@@ -127,11 +129,13 @@ class InkEditor extends AnnotationEditor {
   }
 
   initializePointerType() {
-    this.editorPointerType = PointerType.current;
+    if (InkEditor.editorPointerType === null){
+      InkEditor.editorPointerType = PointerType.current;
+    }
   }
 
   resetPointerType() {
-    this.editorPointerType = null;
+    InkEditor.editorPointerType = null;
   }
 
   /** @inheritdoc */
@@ -337,71 +341,47 @@ class InkEditor extends AnnotationEditor {
   #enableErasing(){
     if (!this.canvas) return;
     
+    this.#disableEditing = false;
 
     this.canvas.style.cursor = 'none';
 
-    if (!this._eraserCursor) {
-      this._eraserCursor = document.createElement('div');
-      this._eraserCursor.className = 'eraserCursor';
-      this._eraserCursor.style.display = 'block';
-      this._eraserCursor.style.width = `${this.#eraserRadius * 2}px`;
-      this._eraserCursor.style.height = `${this.#eraserRadius * 2}px`;
-      document.body.appendChild(this._eraserCursor);
+    this.enableEditMode();
 
-      document.addEventListener('pointermove', this.#updateEraserCursor);
-      this.parent.div.addEventListener('pointerenter', this.#showEraserCursor);
-      this.parent.div.addEventListener('pointerleave', this.#hideEraserCursor);
-
-      const annotationLayers = document.querySelectorAll('.annotationEditorLayer');
-      for (const layer of annotationLayers) {
-        layer.addEventListener('pointerenter', this.#showEraserCursor);
-        layer.addEventListener('pointerleave', this.#hideEraserCursor);
-        layer.classList.remove("inkEditing");
-        layer.classList.add("eraserEditing");
-      }
-    }
+    // this.canvas.addEventListener('pointerdown', this.#boundCanvasPointerdown, {
+    //   signal: this._uiManager._signal,
+    // });
   }
 
   #disableErasing(){
-    if (this._eraserCursor) {
-      this._eraserCursor.remove();
-      this._eraserCursor = null;
-    }
-    if (this.canvas) {
-      this.canvas.style.cursor = '';
-      document.body.removeEventListener('pointermove', this.#updateEraserCursor);
-      this.parent.div.removeEventListener('pointerenter', this.#showEraserCursor);
-      this.parent.div.removeEventListener('pointerleave', this.#hideEraserCursor);
+    this._isDraggable = true;
 
-      const annotationLayers = document.querySelectorAll('.annotationEditorLayer');
-      for (const layer of annotationLayers) {
-        layer.removeEventListener('pointerenter', this.#showEraserCursor);
-        layer.removeEventListener('pointerleave', this.#hideEraserCursor);
-        layer.classList.remove("eraserEditing");
-        layer.classList.add("inkEditing");
-      }
-    }
+    // this.canvas.style.cursor = '';
 
+    this.disableEditMode();
+
+    // this.canvas.removeEventListener('pointerdown', this.#boundCanvasPointerdown, {
+    //   signal: this._uiManager._signal,
+    // });
   }
 
-  #updateEraserCursor = (evt) => {
-    if(!this._eraserCursor) return;
+  // #updateEraserCursor = (evt) => {
+  //   if(!this._eraserCursor) return;
 
-    this._eraserCursor.style.left = `${evt.clientX - this.#eraserRadius}px`;
-    this._eraserCursor.style.top  = `${evt.clientY - this.#eraserRadius}px`;
-  }
+  //   this._eraserCursor.style.left = `${evt.clientX - this.#eraserRadius}px`;
+  //   this._eraserCursor.style.top  = `${evt.clientY - this.#eraserRadius}px`;
+  // }
 
-  #showEraserCursor = () => {
-    if(this._eraserCursor && InkEditor._isEraseMode) {
-      this._eraserCursor.style.display = 'block';
-    }
-  }
+  // #showEraserCursor = () => {
+  //   if(this._eraserCursor && InkEditor._isEraseMode) {
+  //     this._eraserCursor.style.display = 'block';
+  //   }
+  // }
 
-  #hideEraserCursor = () => {
-    if(this._eraserCursor) {
-      this._eraserCursor.style.display = 'none';
-    }
-  }
+  // #hideEraserCursor = () => {
+  //   if(this._eraserCursor) {
+  //     this._eraserCursor.style.display = 'none';
+  //   }
+  // }
 
   /** @inheritdoc */
   rebuild() {
@@ -816,6 +796,7 @@ class InkEditor extends AnnotationEditor {
       ctx.stroke(path);
     }
   }
+  
   #startErasing(x, y){
     const signal = this._uiManager._signal;
     this.canvas.addEventListener("contextmenu", noContextMenu, { signal });
@@ -863,22 +844,25 @@ class InkEditor extends AnnotationEditor {
     this.canvas.removeEventListener("contextmenu", noContextMenu);
   }
 
-  #eraseFromPaths( centerX, centerY){
+  #eraseFromPaths(centerX, centerY){
       if(!this.allRawPaths || this.allRawPaths.length === 0){
         return false;
       }
-      this.radius = 10;
+      const radius = 20 / this.scaleFactor;
+
+      const transformedX = (centerX - this.translationX * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
+      const transformedY = (centerY - this.translationY * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
 
       // remove parts of the points => transform it in several paths
       const newPaths = [];
-      let radius2 = Math.pow(this.radius / this.parentScale, 2);
+      let radius2 = Math.pow(radius / this.parentScale, 2);
       let modified = false;
 
       for (let path of this.allRawPaths) {
         let newPath = [];
         for (let [x, y] of path) {
           // check if point is inside eraser radius
-          let dist = Math.pow(x-centerX, 2) + Math.pow(y-centerY, 2);
+          let dist = Math.pow(x-transformedX, 2) + Math.pow(y-transformedY, 2);
           if (dist >= radius2) {
             // Point is outside eraser radius
             newPath.push([x, y]);
@@ -911,16 +895,17 @@ class InkEditor extends AnnotationEditor {
       if(!this.canvas || !this.ctx){
         return;
       }
-      this.radius = 10;
+      const transformedX = (x - this.translationX * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
+      const transformedY = (y - this.translationY * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
+      const radius = 20 / this.scaleFactor;
       const ctx = this.ctx;
       ctx.save();
       ctx.globalCompositeOperation = "destination-out";
       ctx.beginPath();
-      ctx.arc(x, y, this.radius, 0, Math.PI * 2, false);
+      ctx.arc(transformedX, transformedY, radius, 0, Math.PI * 2, false);
       ctx.fill();
       ctx.restore();
     }
-
   /**
    * Commit the curves we have in this editor.
    */
@@ -967,7 +952,7 @@ class InkEditor extends AnnotationEditor {
    * @param {PointerEvent} event
    */
   canvasPointerdown(event) {
-    if (event.button !== 0 || !this.isInEditMode() || this.#disableEditing || this.editorPointerType !== event.pointerType) {
+    if (event.button !== 0 || !this.isInEditMode() || this.#disableEditing || InkEditor.editorPointerType !== event.pointerType) {
       return;
     }
 
@@ -1032,7 +1017,7 @@ class InkEditor extends AnnotationEditor {
   }
 
   canvasTouchMove(event) {
-    if (!this.isInEditMode() || this.#disableEditing || this.editorPointerType !== PointerType.current) {
+    if (!this.isInEditMode() || this.#disableEditing || InkEditor.editorPointerType !== PointerType.current) {
       return;
     }
     // disable default scroll behaviour on touch move
@@ -1078,12 +1063,10 @@ class InkEditor extends AnnotationEditor {
   }
 
   recreatePaths() {
-        this.#redraw();
-        console.log("recreatePaths()");
-        if(!this.allRawPaths || this.allRawPaths.length === 0){
-          return false;
-        }
-        console.log(this);
+    this.#redraw();
+    if(!this.allRawPaths || this.allRawPaths.length === 0){
+      return false;
+    }
 
     const newRawPaths = this.allRawPaths;
     this.allRawPaths = [];
@@ -1103,7 +1086,6 @@ class InkEditor extends AnnotationEditor {
       const [lastX, lastY] = path[path.length-1];
       this.#stopDrawing(lastX, lastY);
     }
-    // TODO: check if override
     this.addToAnnotationStorage();
     this.#redraw();
     this.modified = false;

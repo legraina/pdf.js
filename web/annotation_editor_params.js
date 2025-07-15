@@ -54,7 +54,7 @@ class AnnotationEditorParams {
     editorFreeHighlightThickness,
     editorHighlightShowAll,
     editorInkEraseMode,
-    // editorEraserThickness,
+    editorEraserThickness,
   }) {
     const dispatchEvent = (typeStr, value) => {
       this.eventBus.dispatch("switchannotationeditorparams", {
@@ -94,9 +94,9 @@ class AnnotationEditorParams {
       this.setAttribute("aria-pressed", !checked);
       dispatchEvent("INK_ERASE_MODE", !checked);
     });
-    // editorEraserThickness.addEventListener("input", function () {
-    //   dispatchEvent("ERASER_THICKNESS", this.valueAsNumber);
-    // });
+    editorEraserThickness.addEventListener("input", function () {
+      dispatchEvent("ERASER_THICKNESS", this.valueAsNumber);
+    });
 
     this.eventBus._on("annotationeditorparamschanged", evt => {
       for (const [type, value] of evt.details) {
@@ -128,9 +128,9 @@ class AnnotationEditorParams {
           case AnnotationEditorParamsType.HIGHLIGHT_SHOW_ALL:
             editorHighlightShowAll.setAttribute("aria-pressed", value);
             break;
-          // case AnnotationEditorParamsType.ERASER_THICKNESS:
-          //   editorEraserThickness.value = value;
-          //   break;
+          case AnnotationEditorParamsType.ERASER_THICKNESS:
+            editorEraserThickness.value = value;
+            break;
         }
       }
     });

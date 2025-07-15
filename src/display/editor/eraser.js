@@ -225,25 +225,23 @@ export class EraserEditor extends AnnotationEditor{
 
       super.enableEditMode();
 
-      this.canvas.style.cursor = 'none';
+      // this.canvas.style.cursor = 'none';
 
-      if (!this._eraserCursor) {
-        this._eraserCursor = document.createElement('div');
-        this._eraserCursor.className = 'eraserCursor';
-        this._eraserCursor.style.width = `${this.thickness}px`;
-        this._eraserCursor.style.height = `${this.thickness}px`;
-        document.body.appendChild(this._eraserCursor);
+      this._eraserCursor = document.createElement('div');
+      this._eraserCursor.className = 'eraserCursor';
+      this._eraserCursor.style.display = 'block';
+      this._eraserCursor.style.width = `${this.radius * 2}px`;
+      this._eraserCursor.style.height = `${this.radius * 2}px`;
+      document.body.appendChild(this._eraserCursor);
+
+      document.addEventListener('pointermove', this._updateCursor);
+      this.parent.div.addEventListener('pointerenter', this._showCursor);
+      this.parent.div.addEventListener('pointerleave', this._hideCursor);
+
+      const inkEditors = this.#getInkEditors();
+      for(const inkEditor of inkEditors){
+        inkEditor.updateEraseMode(true);
       }
-
-      this.canvas.addEventListener('pointermove', this._updateCursor);
-      this.canvas.addEventListener('pointerenter', this._showCursor.bind(this));
-      this.canvas.addEventListener('pointerleave', this._hideCursor.bind(this));
-
-      setTimeout(() => this.initializePointerType(), 0);
-      this._isDraggable = false; // Always false for eraser
-      this.canvas.addEventListener('pointerdown', this.#boundCanvasPointerdown, {
-        signal: this._uiManager._signal,
-      });
     }
 
     /** @inheritdoc */
@@ -253,11 +251,15 @@ export class EraserEditor extends AnnotationEditor{
       }
 
       super.disableEditMode();
-
+      
+      const inkEditors = this.#getInkEditors();
+      for(const inkEditor of inkEditors){
+        inkEditor.updateEraseMode(false);
+      }
       this._hideCursor();
 
       this.canvas.style.cursor = '';
-      this.canvas.removeEventListener('pointermove', this._updateCursor);
+      document.removeEventListener('pointermove', this._updateCursor);
       this.canvas.removeEventListener('pointerenter', this._showCursor.bind(this));
       this.canvas.removeEventListener('pointerleave', this._hideCursor.bind(this));
       
@@ -286,44 +288,43 @@ export class EraserEditor extends AnnotationEditor{
       return true; // Eraser is always empty as it doesn't store annotations
     }
 
-    #startErasing(x, y){
-      const signal = this._uiManager._signal;
-      this.canvas.addEventListener("contextmenu", noContextMenu, { signal });
-      this.canvas.addEventListener("pointerleave", this.#boundCanvasPointerLeave, { signal });
-      this.canvas.addEventListener("pointermove", this.#boundCanvasPointermove, { signal });
-      this.canvas.addEventListener("pointerup", this.#boundCanvasPointerup, { signal });
-      this.canvas.addEventListener("touchmove", this.#boundCanvasTouchMove, {
-        signal: this._uiManager._signal,
-        passive: false,
-      });
-      this.canvas.removeEventListener("pointerdown", this.#boundCanvasPointerdown);
+    // #startErasing(x, y){
+    //   const signal = this._uiManager._signal;
+    //   this.canvas.addEventListener("contextmenu", noContextMenu, { signal });
+    //   this.canvas.addEventListener("pointerleave", this.#boundCanvasPointerLeave, { signal });
+    //   this.canvas.addEventListener("pointermove", this.#boundCanvasPointermove, { signal });
+    //   this.canvas.addEventListener("pointerup", this.#boundCanvasPointerup, { signal });
+    //   this.canvas.addEventListener("touchmove", this.#boundCanvasTouchMove, {
+    //     signal: this._uiManager._signal,
+    //     passive: false,
+    //   });
+    //   this.canvas.removeEventListener("pointerdown", this.#boundCanvasPointerdown);
 
-      this.isEditing = true;
+    //   this.isEditing = true;
 
-      this.#erase(x,y);
-    }
+    //   this.#erase(x,y);
+    // }
 
-    #erase(x, y){
-      const inkEditors = this.#getInkEditors();
-      for(const inkEditor of inkEditors){
-        if(this.#checkInkBoxCollision(inkEditor, x, y)){
-          inkEditor.erase(x, y, this.radius);
-        }
-      }
-    }
+    // #erase(x, y){
+    //   const inkEditors = this.#getInkEditors();
+    //   for(const inkEditor of inkEditors){
+    //     if(this.#checkInkBoxCollision(inkEditor, x, y)){
+    //       inkEditor.erase(x, y, this.radius);
+    //     }
+    //   }
+    // }
 
-    #endErasing(event){
-      this.canvas.removeEventListener("pointerleave", this.#boundCanvasPointerLeave);
-      this.canvas.removeEventListener("pointermove", this.#boundCanvasPointermove);
-      this.canvas.removeEventListener("pointerup", this.#boundCanvasPointerup);
-      this.canvas.removeEventListener("touchmove", this.#boundCanvasTouchMove);
-      this.canvas.addEventListener("pointerdown", this.#boundCanvasPointerdown, { signal: this._uiManager._signal });
+    // #endErasing(event){
+    //   this.canvas.removeEventListener("pointerleave", this.#boundCanvasPointerLeave);
+    //   this.canvas.removeEventListener("pointermove", this.#boundCanvasPointermove);
+    //   this.canvas.removeEventListener("pointerup", this.#boundCanvasPointerup);
+    //   this.canvas.removeEventListener("touchmove", this.#boundCanvasTouchMove);
+    //   this.canvas.addEventListener("pointerdown", this.#boundCanvasPointerdown, { signal: this._uiManager._signal });
 
-      this.isEditing = false;
-      this.#recreatePaths();
+    //   this.isEditing = false;
       
-      this.canvas.removeEventListener("contextmenu", noContextMenu);
-    }
+    //   this.canvas.removeEventListener("contextmenu", noContextMenu);
+    // }
 
 
     /** @inheritdoc */
@@ -368,30 +369,25 @@ export class EraserEditor extends AnnotationEditor{
       }
     }
 
-    #createObserver() {
-      this.#observer = new ResizeObserver(entries => {
-        const rect = entries[0].contentRect;
-        if (rect.width && rect.height && this.canvas) {
-          this.canvas.width = Math.round(rect.width);
-          this.canvas.height = Math.round(rect.height);
-        }
-      });
-      
-      if (this.div) {
-        this.#observer.observe(this.div);
+    
+  #createObserver() {
+    this.#observer = new ResizeObserver(entries => {
+      const rect = entries[0].contentRect;
+      if (rect.width && rect.height && this.canvas) {
+        this.canvas.width = Math.round(rect.width);
+        this.canvas.height = Math.round(rect.height);
       }
-      
-      if (this._uiManager && this._uiManager._signal) {
-        this._uiManager._signal.addEventListener(
-          "abort",
-          () => {
-            this.#observer?.disconnect();
-            this.#observer = null;
-          },
-          { once: true }
-        );
-      }
-    }
+    });
+    this.#observer.observe(this.div);
+    this._uiManager._signal.addEventListener(
+      "abort",
+      () => {
+        this.#observer?.disconnect();
+        this.#observer = null;
+      },
+      { once: true }
+    );
+  }
 
     #getInkEditors(){
       if(!this.parent.getEditors()){
@@ -404,115 +400,14 @@ export class EraserEditor extends AnnotationEditor{
       });
     }
 
-  
-    #checkInkBoxCollision(inkEditor, eraserX, eraserY){
-      if(!inkEditor || inkEditor.isEmpty() || !inkEditor.canvas){
-        return false;
-      }
-      const inkRect = inkEditor.div.getBoundingClientRect();
-      const eraserRect = this.canvas.getBoundingClientRect();
-      
-      const relativeX = eraserX + eraserRect.left - inkRect.left;
-      const relativeY = eraserY + eraserRect.top - inkRect.top;
-
-      if(relativeX < 0 || relativeY < 0 || 
-        relativeX > inkRect.width || relativeY > inkRect.height){
-          return false;
-      }
-      return true; 
-    }
-
-    #eraseInkEditor(inkEditor, eraserX, eraserY){
-      
-
-      // Erase visually
-      this.#eraseFromCanvas(inkEditor, eraserX, eraserY);
-
-      // Erase from annotation data
-      const modified = this.#eraseFromPaths(inkEditor, eraserX, eraserY);
-
-      if(modified){
-        if(inkEditor.allRawPaths.length === 0){
-          inkEditor.remove();
-        }
-      }
-
-      return modified;
-    }
-
-    #eraseFromCanvas(inkEditor, x, y){
-      if(!inkEditor.canvas || !inkEditor.ctx){
-        return;
-      }
-
-      const ctx = inkEditor.ctx;
-      ctx.save();
-      ctx.globalCompositeOperation = "destination-out";
-      ctx.beginPath();
-      ctx.arc(x, y, this.radius, 0, Math.PI * 2, false);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    #eraseFromPaths(inkEditor, centerX, centerY){
-      if(!inkEditor.allRawPaths || inkEditor.allRawPaths.length === 0){
-        return false;
-      }
-
-      // remove parts of the points => transform it in several paths
-      const newPaths = [];
-      let radius2 = Math.pow(this.radius / (this.parentScale), 2);
-      let modified = false;
-
-      for (let path of inkEditor.allRawPaths) {
-        let newPath = [];
-        for (let [x, y] of path) {
-          // check if point is inside eraser radius
-          let dist = Math.pow(x-centerX, 2) + Math.pow(y-centerY, 2);
-          if (dist >= radius2) {
-            // Point is outside eraser radius
-            newPath.push([x, y]);
-          } else {
-            // Point is inside eraser radius
-            modified = true;
-            // Save the current path segment if it has enough points
-            if (newPath.length > 1) {
-              newPaths.push([...newPath]);
-              newPath = [];
-            }
-          }
-        }
-        // Add the final path segment if it wasn't erased and has enough points
-        if (newPath.length > 1) {
-          newPaths.push([...newPath]);
-        }
-      }
-
-      if (modified) {
-        inkEditor.allRawPaths = newPaths;
-        inkEditor.modified = modified;
-      }
-
-
-      return modified;
-    }
-
-    #recreatePaths() {
-      const inkEditors = this.#getInkEditors();
-      for(const inkEditor of inkEditors){
-        if(inkEditor.modified){
-          inkEditor.recreatePaths();
-        }
-      }
-    }
-
-    // called on every pointermove while eraser is active
     _updateCursor(evt) {
       if(!this._eraserCursor) return;
 
       const rect = this.canvas.getBoundingClientRect();
-      const x = rect.left + evt.offsetX;
-      const y = rect.top  + evt.offsetY;
+      // const x = rect.left + evt.offsetX;
+      // const y = rect.top  + evt.offsetY;
+      const x = evt.clientX;
+      const y = evt.clientY;
 
       this._eraserCursor.style.display = 'block';
       this._eraserCursor.style.left = `${x - this.thickness/2}px`;
@@ -549,7 +444,7 @@ export class EraserEditor extends AnnotationEditor{
           preventScroll: true,
         })
       }
-      this.#startErasing(event.offsetX, event.offsetY)
+      // this.#startErasing(event.offsetX, event.offsetY);
     }
 
     /**
@@ -558,7 +453,7 @@ export class EraserEditor extends AnnotationEditor{
      */
     canvasPointerLeave(event){
       if (event.target == document.documentElement || event.relatedTarget === null){
-        this.#endErasing(event);
+        // this.#endErasing(event);
       }
     }
 
@@ -569,7 +464,7 @@ export class EraserEditor extends AnnotationEditor{
     canvasPointermove(event) {
       event.preventDefault();
 
-      this.#erase(event.offsetX, event.offsetY);
+      // this.#erase(event.offsetX, event.offsetY);
     }
 
     /**
@@ -579,7 +474,7 @@ export class EraserEditor extends AnnotationEditor{
     canvasPointerup(event) {
       event.preventDefault();
       
-      this.#endErasing(event);
+      // this.#endErasing(event);
     }
   
     canvasTouchMove(event) {
