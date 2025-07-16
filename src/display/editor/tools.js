@@ -42,6 +42,38 @@ function bindEvents(obj, element, names) {
   }
 }
 
+// class to track current pointer type and the last point type used to update a mode
+class PointerType {
+   static _current = null;
+   static _editor = null;
+   constructor(t) {
+       if (PointerType._current === null) {
+           PointerType._current = "";
+           window.addEventListener("pointerdown", this.windowPointerDown, true);
+       }
+   }
+   destroy() {
+       if (PointerType._current !== null) {
+           window.removeEventListener("pointerdown", this.windowPointerDown, true);
+           PointerType._current = null;
+       }
+   }
+   windowPointerDown(t) {
+       PointerType._current = t.pointerType;
+       return true;
+   }
+   static initializeEditor() {
+     PointerType._editor = PointerType._current;
+   }
+   static sameAsEditor(pointerType = undefined) {
+     if (pointerType) {
+       return PointerType._editor == pointerType;
+     }
+     return PointerType._editor == PointerType._current;
+   }
+}
+new PointerType;
+
 /**
  * Class to create some unique ids for the different editors.
  */
@@ -1698,8 +1730,10 @@ class AnnotationEditorUIManager {
    * @param {string|null} editId
    * @param {boolean} [isFromKeyboard] - true if the mode change is due to a
    *   keyboard action.
+   * @param {boolean} [isFromEvent] - true if the mode change is due to an
+   *   event (click or keyboard).
    */
-  async updateMode(mode, editId = null, isFromKeyboard = false) {
+  async updateMode(mode, editId = null, isFromKeyboard = false, isFromEvent = false) {
     if (this.#mode === mode) {
       return;
     }
@@ -1724,6 +1758,9 @@ class AnnotationEditorUIManager {
 
       this.#updateModeCapability.resolve();
       return;
+    }
+    if (isFromEvent) {
+      PointerType.initializeEditor();
     }
     if (mode === AnnotationEditorType.SIGNATURE) {
       await this.#signatureManager?.loadSignatures();

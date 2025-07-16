@@ -2843,7 +2843,8 @@ class PDFViewer {
       await this.#annotationEditorUIManager.updateMode(
         mode,
         editId,
-        isFromKeyboard
+        isFromKeyboard,
+        true
       );
       if (
         mode !== this.#annotationEditorMode ||

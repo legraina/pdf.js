@@ -15,6 +15,7 @@
 
 // eslint-disable-next-line max-len
 /** @typedef {import("./tools.js").AnnotationEditorUIManager} AnnotationEditorUIManager */
+/** @typedef {import("./tools.js").PointerType} PointerType */
 /** @typedef {import("../display_utils.js").PageViewport} PageViewport */
 // eslint-disable-next-line max-len
 /** @typedef {import("../../../web/text_accessibility.js").TextAccessibilityManager} TextAccessibilityManager */
@@ -54,38 +55,6 @@ import { StampEditor } from "./stamp.js";
  * @typedef {Object} RenderEditorLayerOptions
  * @property {PageViewport} viewport
  */
-
-
- class PointerType {
-      static current = null;
-      static editor = null;
-      constructor(t) {
-          if (PointerType.current === null) {
-              PointerType.current = "";
-              window.addEventListener("pointerdown", this.windowPointerDown, !0)
-          }
-      }
-      destroy() {
-          if (PointerType.current !== null) {
-              window.removeEventListener("pointerdown", this.windowPointerDown, !0);
-              PointerType.current = null
-          }
-      }
-      windowPointerDown(t) {
-          PointerType.current = t.pointerType;
-          return !0
-      }
-      static initializeEditor() {
-        setTimeout(() => PointerType.editor = PointerType.current);
-      }
-      static sameAsEditor(pointerType = undefined) {
-        if (pointerType) {
-          return PointerType.editor == pointerType;
-        }
-        return PointerType.editor == PointerType.current;
-      }
-  }
-  new PointerType;
 
 /**
  * Manage all the different editors on a page.
@@ -218,7 +187,6 @@ class AnnotationEditorLayer {
         this.enableClick();
     }
 
-    PointerType.initializeEditor();
     this.toggleAnnotationLayerPointerEvents(false);
     const { classList } = this.div;
     for (const editorType of AnnotationEditorLayer.#editorTypes.values()) {
