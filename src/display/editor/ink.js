@@ -603,10 +603,10 @@ class InkEditor extends AnnotationEditor {
   #stopDrawing(x, y) {
     this.#requestFrameCallback = null;
 
-    if(!this.modified){
-      x = Math.min(Math.max(x, 0), this.canvas.width);
-      y = Math.min(Math.max(y, 0), this.canvas.height);
-    }
+    // if(!this.modified){
+    //   x = Math.min(Math.max(x, 0), this.canvas.width);
+    //   y = Math.min(Math.max(y, 0), this.canvas.height);
+    // }
 
     this.#draw(x, y);
     this.#endPath();
