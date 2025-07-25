@@ -29,19 +29,11 @@ const pointerType = new PointerType();
 
 export class EraserEditor extends AnnotationEditor{
 
-    #observer = null;
+    #eraserCursor = null;
 
     #disableEditing = false;
 
-    #boundCanvasPointerdown = this.canvasPointerdown.bind(this);
-
-    #boundCanvasPointermove = this.canvasPointermove.bind(this);
-
-    #boundCanvasPointerLeave = this.canvasPointerLeave.bind(this);
-
-    #boundCanvasPointerup = this.canvasPointerup.bind(this);
-
-    #boundCanvasTouchMove = this.canvasTouchMove.bind(this);
+    #isPenDown = false;
 
     static _defaultThickness = 20;
 
@@ -52,21 +44,25 @@ export class EraserEditor extends AnnotationEditor{
     constructor(params){
         super({ ...params, name: "eraserEditor" });
         
-        this.thickness = params.thickness || null;
+        this.thickness = params.thickness || EraserEditor._defaultThickness;
         
         this.radius = this.thickness / 2;
         
         this.editorPointerType = null;
 
         this._updateCursor = this._updateCursor.bind(this);
+        this._showCursor = this._showCursor.bind(this);
+        this._hideCursor = this._hideCursor.bind(this);
+        this._pointerDown = this._pointerDown.bind(this);
+        this._pointerUp = this._pointerUp.bind(this);
     }
 
     destroy() {
       super.destroy();
 
-      if(this._eraserCursor){
-        this._eraserCursor.remove();
-        this._eraserCursor = null;
+      if(this.#eraserCursor){
+        this.#eraserCursor.remove();
+        this.#eraserCursor = null;
       }
     }
 
@@ -88,7 +84,7 @@ export class EraserEditor extends AnnotationEditor{
     updateParams(type, value){
       switch(type){
         case AnnotationEditorParamsType.ERASER_THICKNESS:
-          this.#updateThickness(value);
+          this.updateThickness(value);
           break;
       }
     }
@@ -110,14 +106,18 @@ export class EraserEditor extends AnnotationEditor{
       ];
     }
 
-    #updateThickness(thickness){
+    updateThickness(thickness){
       const setThickness = th => {
         this.thickness = th;
         this.radius = th / 2;
 
-        if(this._eraserCursor){
-        this._eraserCursor.style.width = `${th}px`;
-        this._eraserCursor.style.height = `${th}px`;
+        if(this.#eraserCursor){
+        this.#eraserCursor.style.width = `${this.thickness}px`;
+        this.#eraserCursor.style.height = `${this.thickness}px`;
+        }
+        const inkEditors = this.#getInkEditors();
+        for (const inkEditor of inkEditors){
+          inkEditor.updateEraseMode(true, this.thickness);
         }
       };
 
@@ -132,7 +132,8 @@ export class EraserEditor extends AnnotationEditor{
       overwriteIfSameType: true,
       keepUndo: true,
     });
-    // #2256 modified by ngx-extended-pdf-viewer
+    EraserEditor._defaultThickness = thickness;
+
     this.eventBus?.dispatch("annotation-editor-event", {
       source: this,
       type: "thicknessChanged",
@@ -171,13 +172,8 @@ export class EraserEditor extends AnnotationEditor{
       if(this.div === null){
         return;
       }
-
-      if(!this.canvas){
-        this.#createCanvas();
-        this.#createObserver();
-      } else {
-        // Update canvas size if it already exists
-        this.#updateCanvasSize();
+      if(this.div){
+        this.#updateDivSize();
       }
       if(!this.isAttachedToDOM){
         this.parent.add(this);
@@ -189,64 +185,70 @@ export class EraserEditor extends AnnotationEditor{
 
     /** @inheritdoc */
     remove(){
-      if(this._eraserCursor){
-        this._eraserCursor.remove();
-        this._eraserCursor = null;
-      }
-      
-      if(this.canvas === null){
-        return;
+      const inkEditors = this.#getInkEditors();
+      for(const inkEditor of inkEditors){
+        inkEditor.updateEraseMode(false);
       }
 
-      if(this.canvas){
-        this.canvas.removeEventListener("pointermove", this._updateCursor);
-        this.canvas.removeEventListener('pointerenter', this._showCursor.bind(this));
-        this.canvas.removeEventListener('pointerleave', this._hideCursor.bind(this));
-        this.canvas.style.cursor = '';
+      if(this.#eraserCursor){
+        this.#eraserCursor.remove();
+        this.#eraserCursor = null;
       }
+      if(this.div && this.parent.div){
+        this.parent.div.removeEventListener('pointermove', this._updateCursor);
+        this.parent.div.removeEventListener('pointerdown', this._pointerDown);
+        this.parent.div.removeEventListener('pointerup', this._pointerUp);
+        this.parent.div.removeEventListener('pointercancel', this._pointerUp);
+        this.parent.div.removeEventListener('pointerleave', this._hideCursor);
+        this.div.width = this.div.height = 0;
 
-      this.commit();
+        super.remove();
 
-      this.canvas.width = this.canvas.height = 0;
-      this.canvas.remove();
-      this.canvas = null;
-
-      this.#observer?.disconnect();
-      this.#observer = null;
-
-      super.remove();
+        this.div.remove();
+        this.div = null;
+      }
+      else{
+        super.remove();
+      }
     }
 
     /** @inheritdoc */
     enableEditMode(){
-      if(this.#disableEditing || this.canvas === null){
+      if(this.#disableEditing){
         return;
       }
 
       super.enableEditMode();
 
-      // this.canvas.style.cursor = 'none';
+      if(this.#eraserCursor){
+        this.#eraserCursor.remove();
+        this.#eraserCursor = null;
+      }
+      this.#eraserCursor = document.createElement('div');
+      this.#eraserCursor.className = 'eraserCursor';
+      this.#eraserCursor.style.width = `${this.thickness}px`;
+      this.#eraserCursor.style.height = `${this.thickness}px`;
+      this.#eraserCursor.style.display = 'none'
+      this.parent.div.appendChild(this.#eraserCursor);
+      
 
-      this._eraserCursor = document.createElement('div');
-      this._eraserCursor.className = 'eraserCursor';
-      this._eraserCursor.style.display = 'block';
-      this._eraserCursor.style.width = `${this.radius * 2}px`;
-      this._eraserCursor.style.height = `${this.radius * 2}px`;
-      document.body.appendChild(this._eraserCursor);
-
-      document.addEventListener('pointermove', this._updateCursor);
-      this.parent.div.addEventListener('pointerenter', this._showCursor);
+      this.parent.div.addEventListener('pointermove', this._updateCursor);
+      this.parent.div.addEventListener('pointerdown', this._pointerDown);
+      this.parent.div.addEventListener('pointerup', this._pointerUp);
+      this.parent.div.addEventListener('pointercancel', this._pointerUp);
       this.parent.div.addEventListener('pointerleave', this._hideCursor);
+
+      this.#updateDivSize();
 
       const inkEditors = this.#getInkEditors();
       for(const inkEditor of inkEditors){
-        inkEditor.updateEraseMode(true);
+        inkEditor.updateEraseMode(true, this._defaultThickness);
       }
     }
 
     /** @inheritdoc */
     disableEditMode(){
-      if(!this.isInEditMode() || this.canvas === null){
+      if(!this.isInEditMode()){
         return;
       }
 
@@ -258,24 +260,22 @@ export class EraserEditor extends AnnotationEditor{
       }
       this._hideCursor();
 
-      this.canvas.style.cursor = '';
-      document.removeEventListener('pointermove', this._updateCursor);
-      this.canvas.removeEventListener('pointerenter', this._showCursor.bind(this));
-      this.canvas.removeEventListener('pointerleave', this._hideCursor.bind(this));
+      this.parent.div.removeEventListener('pointermove', this._updateCursor);
+      this.parent.div.removeEventListener('pointerdown', this._pointerDown);
+      this.parent.div.removeEventListener('pointerup', this._pointerUp);
+      this.parent.div.removeEventListener('pointercancel', this._pointerUp);
+      this.parent.div.removeEventListener('pointerleave', this._hideCursor);
+  
       
-      if(this._eraserCursor){
-        this._eraserCursor.remove();
-        this._eraserCursor = null;
+      if(this.#eraserCursor){
+        this.#eraserCursor.remove();
+        this.#eraserCursor = null;
       }
 
       this.resetPointerType();
       this._isDraggable = false; //Always false for eraser
       this.div.classList.remove("editing");
 
-      this.canvas.removeEventListener(
-        "pointerdown",
-        this.#boundCanvasPointerdown
-      );
     }
     /** @inheritdoc */
     onceAdded(){
@@ -288,44 +288,6 @@ export class EraserEditor extends AnnotationEditor{
       return true; // Eraser is always empty as it doesn't store annotations
     }
 
-    // #startErasing(x, y){
-    //   const signal = this._uiManager._signal;
-    //   this.canvas.addEventListener("contextmenu", noContextMenu, { signal });
-    //   this.canvas.addEventListener("pointerleave", this.#boundCanvasPointerLeave, { signal });
-    //   this.canvas.addEventListener("pointermove", this.#boundCanvasPointermove, { signal });
-    //   this.canvas.addEventListener("pointerup", this.#boundCanvasPointerup, { signal });
-    //   this.canvas.addEventListener("touchmove", this.#boundCanvasTouchMove, {
-    //     signal: this._uiManager._signal,
-    //     passive: false,
-    //   });
-    //   this.canvas.removeEventListener("pointerdown", this.#boundCanvasPointerdown);
-
-    //   this.isEditing = true;
-
-    //   this.#erase(x,y);
-    // }
-
-    // #erase(x, y){
-    //   const inkEditors = this.#getInkEditors();
-    //   for(const inkEditor of inkEditors){
-    //     if(this.#checkInkBoxCollision(inkEditor, x, y)){
-    //       inkEditor.erase(x, y, this.radius);
-    //     }
-    //   }
-    // }
-
-    // #endErasing(event){
-    //   this.canvas.removeEventListener("pointerleave", this.#boundCanvasPointerLeave);
-    //   this.canvas.removeEventListener("pointermove", this.#boundCanvasPointermove);
-    //   this.canvas.removeEventListener("pointerup", this.#boundCanvasPointerup);
-    //   this.canvas.removeEventListener("touchmove", this.#boundCanvasTouchMove);
-    //   this.canvas.addEventListener("pointerdown", this.#boundCanvasPointerdown, { signal: this._uiManager._signal });
-
-    //   this.isEditing = false;
-      
-    //   this.canvas.removeEventListener("contextmenu", noContextMenu);
-    // }
-
 
     /** @inheritdoc */
     render() {
@@ -337,63 +299,28 @@ export class EraserEditor extends AnnotationEditor{
 
       this.div.setAttribute("data-l10n-id", "pdfjs-eraser");
 
-      this.#createCanvas();
-      this.#createObserver();
-
-      // Eraser always covers the full page and is in editing mode
       this.div.classList.add("editing");
       this.enableEditMode();
 
       return this.div;
     }
 
-    #createCanvas(){
-      this.canvas = document.createElement("canvas");
-      this.canvas.width = this.canvas.height = 0;
-      this.canvas.className = "eraserEditorCanvas";
-      this.canvas.setAttribute("data-l10n-id", "pdfjs-eraser-canvas");
-      this.div.append(this.canvas);
-      this.ctx = this.canvas.getContext("2d");
-      
-      // Set initial canvas size to match div
-      this.#updateCanvasSize();
-    }
 
-    #updateCanvasSize() {
-      if (this.canvas && this.div) {
-        const rect = this.div.getBoundingClientRect();
-        if (rect.width && rect.height) {
-          this.canvas.width = Math.round(rect.width);
-          this.canvas.height = Math.round(rect.height);
+    #updateDivSize() {
+      if(this.parent.div && this.div){
+        const [parentWidth, parentHeight] = this.parentDimensions;
+        if (parentWidth && parentHeight) {
+          this.div.style.width = `${parentWidth}px`;
+          this.div.style.height = `${parentHeight}px`;
         }
-      }
     }
-
-    
-  #createObserver() {
-    this.#observer = new ResizeObserver(entries => {
-      const rect = entries[0].contentRect;
-      if (rect.width && rect.height && this.canvas) {
-        this.canvas.width = Math.round(rect.width);
-        this.canvas.height = Math.round(rect.height);
-      }
-    });
-    this.#observer.observe(this.div);
-    this._uiManager._signal.addEventListener(
-      "abort",
-      () => {
-        this.#observer?.disconnect();
-        this.#observer = null;
-      },
-      { once: true }
-    );
   }
+
 
     #getInkEditors(){
       if(!this.parent.getEditors()){
         return [];
       }
-
       const allEditors = this.parent.getEditors();
       return allEditors.filter(editor => {
         return editor instanceof InkEditor
@@ -401,96 +328,57 @@ export class EraserEditor extends AnnotationEditor{
     }
 
     _updateCursor(evt) {
-      if(!this._eraserCursor) return;
+      if(!this.#eraserCursor) return;
 
-      const rect = this.canvas.getBoundingClientRect();
-      // const x = rect.left + evt.offsetX;
-      // const y = rect.top  + evt.offsetY;
-      const x = evt.clientX;
-      const y = evt.clientY;
+      const rect = this.parent.div.getBoundingClientRect();
+      const x = evt.clientX - rect.left;
+      const y = evt.clientY - rect.top;
 
-      this._eraserCursor.style.display = 'block';
-      this._eraserCursor.style.left = `${x - this.thickness/2}px`;
-      this._eraserCursor.style.top  = `${y - this.thickness/2}px`;
+      this.#eraserCursor.style.left = `${x - this.thickness/2}px`;
+      this.#eraserCursor.style.top  = `${y - this.thickness/2}px`;
+
+      if(evt.pointerType === 'mouse' || (evt.pointerType === 'pen' || this.#isPenDown)){
+        this._showCursor();
+      }
     }
 
     _showCursor(){
-      if(this._eraserCursor && this.isInEditMode()){
-        this._eraserCursor.style.display = 'block';
+      if(this.#eraserCursor && this.isInEditMode()){
+        this.#eraserCursor.style.display = 'block';
       }
     }
     _hideCursor(){
-      if(this._eraserCursor){
-        this._eraserCursor.style.display = 'none';
+      if(this.#eraserCursor){
+        this.#eraserCursor.style.display = 'none';
       }
     }
+    _pointerDown(event){
+      this.#isPenDown = true;
+      if(event.pointerType === 'pen' || event.pointerType === 'mouse'){
+        this._showCursor();
+        this._updateCursor(event);
+
+        if(event.PointerType === 'pen' && event.cancelable){
+          event.preventDefault();
+        }
+      }
+    }
+    _pointerUp(event){
+      this.#isPenDown = false;
+      this._hideCursor();
+    }
+
     /** @override */
     commitOrRemove(){
       this.commit();
-    }
-    
-    /**
-     * onpointerdown callback for the canvas we're erasing on.
-     * @param {PointerEvent} event
-     */
-    canvasPointerdown(event){
-      if (event.button !== 0 || !this.isInEditMode() || this.#disableEditing || this.editorPointerType !== PointerType.current){
-        return;
-      }
-      event.preventDefault();
-
-      if(!this.div.contains(document.activeElement)){
-        this.div.focus({
-          preventScroll: true,
-        })
-      }
-      // this.#startErasing(event.offsetX, event.offsetY);
-    }
-
-    /**
-     * onpointerleave callback for the canvas we're erasing on.
-     * @param {PointerEvent} event
-     */
-    canvasPointerLeave(event){
-      if (event.target == document.documentElement || event.relatedTarget === null){
-        // this.#endErasing(event);
-      }
-    }
-
-    /**
-     * onpointermove callback for the canvas we're erasing on.
-     * @param {PointerEvent} event
-     */
-    canvasPointermove(event) {
-      event.preventDefault();
-
-      // this.#erase(event.offsetX, event.offsetY);
-    }
-
-    /**
-     * onpointerup callback for the canvas we're erasing on.
-     * @param {PointerEvent} event
-     */
-    canvasPointerup(event) {
-      event.preventDefault();
-      
-      // this.#endErasing(event);
-    }
-  
-    canvasTouchMove(event) {
-      if (!this.isInEditMode() || this.#disableEditing || this.editorPointerType !== PointerType.current) {
-        return;
-      }
-      // disable default scroll behaviour on touch move
-      event.preventDefault();
     }
 
     commit(){
       if(this.#disableEditing){
         return;
       }
-      if(this._eraserCursor){
-        this._eraserCursor.style.display = 'none';
+      if(this.#eraserCursor){
+        this.#eraserCursor.style.display = 'none';
       }
     }
 }

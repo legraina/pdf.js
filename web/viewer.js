@@ -202,7 +202,6 @@ function getViewerConfiguration() {
       editorInkColor: document.getElementById("editorInkColor"),
       editorInkThickness: document.getElementById("editorInkThickness"),
       editorInkOpacity: document.getElementById("editorInkOpacity"),
-      editorInkEraseMode: document.getElementById("editorInkEraseMode"),
       editorEraserThickness: document.getElementById("editorEraserThickness"),
       editorStampAddImage: document.getElementById("editorStampAddImage"),
       editorFreeHighlightThickness: document.getElementById(

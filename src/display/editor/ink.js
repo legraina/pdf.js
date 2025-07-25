@@ -83,10 +83,6 @@ class InkEditor extends AnnotationEditor {
 
   #requestFrameCallback = null;
 
-  // _eraserCursor = null;
-
-  #eraserRadius = 20;
-
   static _defaultColor = null;
 
   static _defaultOpacity = 1;
@@ -94,6 +90,8 @@ class InkEditor extends AnnotationEditor {
   static _defaultThickness = 1;
 
   static _isEraseMode = false;
+
+  static _eraserThickness = 20;
 
   static _type = "ink";
 
@@ -116,7 +114,7 @@ class InkEditor extends AnnotationEditor {
     this.x = 0;
     this.y = 0;
     this._willKeepAspectRatio = true;
-    // this.editorPointerType = null;
+    this.editorPointerType = null;
     this.modified = false;
   }
 
@@ -155,9 +153,6 @@ class InkEditor extends AnnotationEditor {
       case AnnotationEditorParamsType.INK_OPACITY:
         InkEditor._defaultOpacity = value / 100;
         break;
-      case AnnotationEditorParamsType.INK_ERASE_MODE:
-        InkEditor._isEraseMode = value;
-        break;
     }
   }
 
@@ -173,9 +168,6 @@ class InkEditor extends AnnotationEditor {
       case AnnotationEditorParamsType.INK_OPACITY:
         this.#updateOpacity(value);
         break;
-      case AnnotationEditorParamsType.INK_ERASE_MODE:
-        this.updateEraseMode(value);
-        break;
     }
   }
 
@@ -190,10 +182,6 @@ class InkEditor extends AnnotationEditor {
       [
         AnnotationEditorParamsType.INK_OPACITY,
         Math.round(InkEditor._defaultOpacity * 100),
-      ],
-      [
-        AnnotationEditorParamsType.INK_ERASE_MODE,
-        InkEditor._isEraseMode,
       ],
     ];
   }
@@ -214,10 +202,6 @@ class InkEditor extends AnnotationEditor {
       [
         AnnotationEditorParamsType.INK_OPACITY,
         Math.round(100 * (this.opacity ?? InkEditor._defaultOpacity)),
-      ],
-      [
-        AnnotationEditorParamsType.INK_ERASE_MODE,
-        InkEditor._isEraseMode,
       ],
     ];
   }
@@ -316,16 +300,25 @@ class InkEditor extends AnnotationEditor {
     // #2256 end of modification by ngx-extended-pdf-viewer
   }
 
-  updateEraseMode(enableErasing){
+  updateEraseMode(enableErasing, thickness = null){
 
     InkEditor._isEraseMode = enableErasing;
-    this._isDraggable = false;
+
+    if(thickness !== null){
+      InkEditor._eraserThickness = thickness;
+    }
 
     if(InkEditor._isEraseMode){
+      this._isDraggable = !InkEditor._isEraseMode && !this.isEmpty();
       this.#enableErasing();
     }
     else{
+      this._isDraggable = !InkEditor._isEraseMode && !this.isEmpty();
       this.#disableErasing();
+    }
+
+    if (!this.isInEditMode()) {
+      this.enableEditMode();
     }
 
     this.eventBus?.dispatch("annotation-editor-event", {
@@ -344,44 +337,25 @@ class InkEditor extends AnnotationEditor {
     this.#disableEditing = false;
 
     this.canvas.style.cursor = 'none';
+    this.div.classList.add("erasing");
 
     this.enableEditMode();
-
-    // this.canvas.addEventListener('pointerdown', this.#boundCanvasPointerdown, {
-    //   signal: this._uiManager._signal,
-    // });
   }
 
   #disableErasing(){
-    this._isDraggable = true;
+    this._isDraggable = !this.isEmpty();
 
-    // this.canvas.style.cursor = '';
+    this.div.classList.remove("erasing");
 
-    this.disableEditMode();
+    InkEditor._isEraseMode = false;
 
-    // this.canvas.removeEventListener('pointerdown', this.#boundCanvasPointerdown, {
-    //   signal: this._uiManager._signal,
-    // });
-  }
+    this.canvas.removeEventListener('pointerdown', this.#boundCanvasPointerdown);
+  
+    this.canvas.addEventListener("pointerdown", this.#boundCanvasPointerdown, {
+      signal: this._uiManager._signal,
+    });
+    }
 
-  // #updateEraserCursor = (evt) => {
-  //   if(!this._eraserCursor) return;
-
-  //   this._eraserCursor.style.left = `${evt.clientX - this.#eraserRadius}px`;
-  //   this._eraserCursor.style.top  = `${evt.clientY - this.#eraserRadius}px`;
-  // }
-
-  // #showEraserCursor = () => {
-  //   if(this._eraserCursor && InkEditor._isEraseMode) {
-  //     this._eraserCursor.style.display = 'block';
-  //   }
-  // }
-
-  // #hideEraserCursor = () => {
-  //   if(this._eraserCursor) {
-  //     this._eraserCursor.style.display = 'none';
-  //   }
-  // }
 
   /** @inheritdoc */
   rebuild() {
@@ -476,7 +450,7 @@ class InkEditor extends AnnotationEditor {
 
     super.disableEditMode();
     this.resetPointerType();
-    this._isDraggable = !this.isEmpty();
+    this._isDraggable = !InkEditor._isEraseMode && !this.isEmpty();
     this.div.classList.remove("editing");
 
     this.canvas.removeEventListener(
@@ -487,7 +461,7 @@ class InkEditor extends AnnotationEditor {
 
   /** @inheritdoc */
   onceAdded() {
-    this._isDraggable = !this.isEmpty();
+    this._isDraggable = !InkEditor._isEraseMode && !this.isEmpty();
     this.updateEraseMode(InkEditor._isEraseMode);
   }
 
@@ -650,32 +624,34 @@ class InkEditor extends AnnotationEditor {
     }
     const path2D = this.#currentPath2D;
     const currentPath = this.currentPath;
-    this.currentPath = [];
-    this.#currentPath2D = new Path2D();
+    if(!InkEditor._isEraseMode){
+      this.currentPath = [];
+      this.#currentPath2D = new Path2D();
 
-    const cmd = () => {
-      this.allRawPaths.push(currentPath);
-      this.paths.push(bezier);
-      this.bezierPath2D.push(path2D);
-      this._uiManager.rebuild(this);
-    };
+      const cmd = () => {
+        this.allRawPaths.push(currentPath);
+        this.paths.push(bezier);
+        this.bezierPath2D.push(path2D);
+        this._uiManager.rebuild(this);
+      };
 
-    const undo = () => {
-      this.allRawPaths.pop();
-      this.paths.pop();
-      this.bezierPath2D.pop();
-      if (this.paths.length === 0) {
-        this.remove();
-      } else {
-        if (!this.canvas) {
-          this.#createCanvas();
-          this.#createObserver();
+      const undo = () => {
+        this.allRawPaths.pop();
+        this.paths.pop();
+        this.bezierPath2D.pop();
+        if (this.paths.length === 0) {
+          this.remove();
+        } else {
+          if (!this.canvas) {
+            this.#createCanvas();
+            this.#createObserver();
+          }
+          this.#fitToContent();
         }
-        this.#fitToContent();
-      }
-    };
+      };
 
-    this.addCommands({ cmd, undo, mustExec: true });
+      this.addCommands({ cmd, undo, mustExec: true });
+    }
     // #2256 modified by ngx-extended-pdf-viewer
     this.eventBus?.dispatch("annotation-editor-event", {
       source: this,
@@ -809,13 +785,15 @@ class InkEditor extends AnnotationEditor {
     });
     this.canvas.removeEventListener("pointerdown", this.#boundCanvasPointerdown);
 
+    this.originalAllRawPaths = [...this.allRawPaths];
+    this.originalPaths = [...this.paths];
+    this.originalBezierPath2D = [...this.bezierPath2D];
+
     this.isEditing = true;
     this.#erase(x,y);
   }
 
   #erase(x, y){
-    // this.radius = radius;
-    const previousPaths = this.allRawPaths;
 
     // Erase visually
     this.#eraseFromCanvas(x, y);
@@ -823,7 +801,7 @@ class InkEditor extends AnnotationEditor {
     // Erase Point
     const modified = this.#eraseFromPaths(x, y);
 
-    if(modified & this.allRawPaths.length === 0){
+    if(modified && this.allRawPaths.length === 0){
       this.remove();
     }
     return modified;
@@ -834,21 +812,56 @@ class InkEditor extends AnnotationEditor {
     this.canvas.removeEventListener("pointermove", this.#boundCanvasPointermove);
     this.canvas.removeEventListener("pointerup", this.#boundCanvasPointerup);
     this.canvas.removeEventListener("touchmove", this.#boundCanvasTouchMove);
-    this.canvas.addEventListener("pointerdown", this.#boundCanvasPointerdown, { signal: this._uiManager._signal });
+    this.canvas.removeEventListener("pointerdown", this.#boundCanvasPointerdown);
 
-    this.isEditing = false;
-    if(this.modified){
-      this.recreatePaths();
-    }
     
+    this.isEditing = false;
+    this._isDraggable = !InkEditor._isEraseMode && !this.isEmpty();
     this.canvas.removeEventListener("contextmenu", noContextMenu);
+
+    if(this.modified) {
+      const newPaths = [...this.allRawPaths];
+      
+      const cmd = () => {
+        const wasEraseMode = InkEditor._isEraseMode;
+        InkEditor._isEraseMode = false;
+        
+        try {
+          this.allRawPaths = newPaths;
+          this.recreatePaths();
+        } finally {
+          InkEditor._isEraseMode = wasEraseMode;
+        }
+      };
+
+      const undo = () => {
+        const wasEraseMode = InkEditor._isEraseMode;
+        InkEditor._isEraseMode = false;
+        
+        try {
+          this.allRawPaths = [...this.originalAllRawPaths];
+          this.paths = [...this.originalPaths];
+          this.bezierPath2D = [...this.originalBezierPath2D];
+          this.recreatePaths();
+        } finally {
+          InkEditor._isEraseMode = wasEraseMode;
+        }
+      };
+      
+      this.addCommands({
+        cmd,
+        undo,
+        mustExec: true,
+      });
+    }
+    this.canvas.addEventListener("pointerdown", this.#boundCanvasPointerdown);
   }
 
   #eraseFromPaths(centerX, centerY){
       if(!this.allRawPaths || this.allRawPaths.length === 0){
         return false;
       }
-      const radius = 20 / this.scaleFactor;
+      const radius = InkEditor._eraserThickness / this.scaleFactor;
 
       const transformedX = (centerX - this.translationX * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
       const transformedY = (centerY - this.translationY * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
@@ -897,7 +910,7 @@ class InkEditor extends AnnotationEditor {
       }
       const transformedX = (x - this.translationX * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
       const transformedY = (y - this.translationY * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
-      const radius = 20 / this.scaleFactor;
+      const radius = InkEditor._eraserThickness / this.scaleFactor;
       const ctx = this.ctx;
       ctx.save();
       ctx.globalCompositeOperation = "destination-out";
@@ -910,7 +923,7 @@ class InkEditor extends AnnotationEditor {
    * Commit the curves we have in this editor.
    */
   commit() {
-    if (this.#disableEditing) {
+    if (this.#disableEditing || InkEditor._isEraseMode) {
       return;
     }
 
@@ -1180,7 +1193,7 @@ class InkEditor extends AnnotationEditor {
   }
 
   #setCanvasDims() {
-    if (!this.#isCanvasInitialized) {
+    if (!this.#isCanvasInitialized || InkEditor._isEraseMode) {
       return;
     }
     const [parentWidth, parentHeight] = this.parentDimensions;

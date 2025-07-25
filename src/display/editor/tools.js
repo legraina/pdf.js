@@ -1675,6 +1675,10 @@ class AnnotationEditorUIManager {
         break;
       case AnnotationEditorParamsType.INK_ERASE_MODE:
         this.updateAllInkEditors("ink", value);
+        break;
+      case AnnotationEditorParamsType.ERASER_THICKNESS:
+        this.updateEraserThickness("eraser", value);
+        break;
     }
 
     for (const editor of this.#selectedEditors) {
@@ -1689,6 +1693,14 @@ class AnnotationEditorUIManager {
     for(const editor of this.#allEditors.values()){
       if(editor.editorType === type){
         editor.updateEraseMode(value);
+      }
+    }
+  }
+
+  updateEraserThickness(type, value){
+    for(const editor of this.#allEditors.values()){
+      if(editor.editorType === type){
+        editor.updateThickness(value);
       }
     }
   }

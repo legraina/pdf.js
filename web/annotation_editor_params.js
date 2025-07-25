@@ -53,7 +53,6 @@ class AnnotationEditorParams {
     editorStampAddImage,
     editorFreeHighlightThickness,
     editorHighlightShowAll,
-    editorInkEraseMode,
     editorEraserThickness,
   }) {
     const dispatchEvent = (typeStr, value) => {
@@ -89,11 +88,6 @@ class AnnotationEditorParams {
       this.setAttribute("aria-pressed", !checked);
       dispatchEvent("HIGHLIGHT_SHOW_ALL", !checked);
     });
-    editorInkEraseMode.addEventListener("click", function () {
-      const checked = this.getAttribute("aria-pressed") === "true";
-      this.setAttribute("aria-pressed", !checked);
-      dispatchEvent("INK_ERASE_MODE", !checked);
-    });
     editorEraserThickness.addEventListener("input", function () {
       dispatchEvent("ERASER_THICKNESS", this.valueAsNumber);
     });
@@ -115,9 +109,6 @@ class AnnotationEditorParams {
             break;
           case AnnotationEditorParamsType.INK_OPACITY:
             editorInkOpacity.value = value;
-            break;
-          case AnnotationEditorParamsType.INK_ERASE_MODE:
-            editorInkEraseMode.setAttribute("aria-pressed", value);
             break;
           case AnnotationEditorParamsType.HIGHLIGHT_THICKNESS:
             editorFreeHighlightThickness.value = value;
