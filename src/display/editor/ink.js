@@ -837,15 +837,10 @@ class InkEditor extends AnnotationEditor {
       const undo = () => {
         const wasEraseMode = InkEditor._isEraseMode;
         InkEditor._isEraseMode = false;
-        
-        try {
-          this.allRawPaths = [...this.originalAllRawPaths];
-          this.paths = [...this.originalPaths];
-          this.bezierPath2D = [...this.originalBezierPath2D];
-          this.recreatePaths();
-        } finally {
-          InkEditor._isEraseMode = wasEraseMode;
-        }
+        this.allRawPaths = [...this.originalAllRawPaths];
+        this.paths = [...this.originalPaths];
+        this.bezierPath2D = [...this.originalBezierPath2D];
+        this.recreatePaths();
       };
       
       this.addCommands({
