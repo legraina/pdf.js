@@ -116,6 +116,7 @@ class InkEditor extends AnnotationEditor {
     this._willKeepAspectRatio = true;
     this.editorPointerType = null;
     this.modified = false;
+    InkEditor._isEraseMode = false;
   }
 
   destroy() {
@@ -320,6 +321,7 @@ class InkEditor extends AnnotationEditor {
     if (!this.isInEditMode()) {
       this.enableEditMode();
     }
+    const wasErasing = !enableErasing;
 
     this.eventBus?.dispatch("annotation-editor-event", {
       source: this,
@@ -327,7 +329,7 @@ class InkEditor extends AnnotationEditor {
       page: this.pageIndex + 1,
       editorType: this.constructor.name,
       value: enableErasing,
-      previousValue: !enableErasing,
+      previousValue: wasErasing,
     });
   }
 
@@ -837,10 +839,15 @@ class InkEditor extends AnnotationEditor {
       const undo = () => {
         const wasEraseMode = InkEditor._isEraseMode;
         InkEditor._isEraseMode = false;
-        this.allRawPaths = [...this.originalAllRawPaths];
-        this.paths = [...this.originalPaths];
-        this.bezierPath2D = [...this.originalBezierPath2D];
-        this.recreatePaths();
+        try{
+          this.allRawPaths = [...this.originalAllRawPaths];
+          this.paths = [...this.originalPaths];
+          this.bezierPath2D = [...this.originalBezierPath2D];
+          this.recreatePaths();
+        }
+        finally{
+          InkEditor._isEraseMode = wasEraseMode;
+        }
       };
       
       this.addCommands({
