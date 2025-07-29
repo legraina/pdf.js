@@ -335,7 +335,7 @@ class InkEditor extends AnnotationEditor {
 
   #enableErasing(){
     if (!this.canvas) return;
-    
+
     this.#disableEditing = false;
 
     this.canvas.style.cursor = 'none';
@@ -796,16 +796,16 @@ class InkEditor extends AnnotationEditor {
   }
 
   #erase(x, y){
-
+    if (this.allRawPaths.length === 0){
+      this.remove();
+      return;
+    } 
     // Erase visually
     this.#eraseFromCanvas(x, y);
 
     // Erase Point
     const modified = this.#eraseFromPaths(x, y);
 
-    if(modified && this.allRawPaths.length === 0){
-      this.remove();
-    }
     return modified;
   }
 
@@ -823,6 +823,11 @@ class InkEditor extends AnnotationEditor {
 
     if(this.modified) {
       const newPaths = [...this.allRawPaths];
+
+      if(newPaths.length === 0){
+        this.remove();
+        return;
+      }
       
       const cmd = () => {
         const wasEraseMode = InkEditor._isEraseMode;
@@ -856,7 +861,9 @@ class InkEditor extends AnnotationEditor {
         mustExec: true,
       });
     }
-    this.canvas.addEventListener("pointerdown", this.#boundCanvasPointerdown);
+    if(this.parent && this.canvas){
+      this.canvas.addEventListener("pointerdown", this.#boundCanvasPointerdown);
+    }
   }
 
   #eraseFromPaths(centerX, centerY){
@@ -865,8 +872,8 @@ class InkEditor extends AnnotationEditor {
       }
       const radius = InkEditor._eraserThickness / this.scaleFactor;
 
-      const transformedX = (centerX - this.translationX * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
-      const transformedY = (centerY - this.translationY * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
+      const transformedX = (centerX - this.translationX * this.scaleFactor) / this.scaleFactor;
+      const transformedY = (centerY - this.translationY * this.scaleFactor) / this.scaleFactor;
 
       // remove parts of the points => transform it in several paths
       const newPaths = [];
@@ -910,8 +917,8 @@ class InkEditor extends AnnotationEditor {
       if(!this.canvas || !this.ctx){
         return;
       }
-      const transformedX = (x - this.translationX * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
-      const transformedY = (y - this.translationY * this.scaleFactor - this.#getPadding()/2) / this.scaleFactor;
+      const transformedX = (x - this.translationX * this.scaleFactor) / this.scaleFactor;
+      const transformedY = (y - this.translationY * this.scaleFactor) / this.scaleFactor;
       const radius = InkEditor._eraserThickness / this.scaleFactor;
       const ctx = this.ctx;
       ctx.save();
