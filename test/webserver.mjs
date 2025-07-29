@@ -40,7 +40,7 @@ const DEFAULT_MIME_TYPE = "application/octet-stream";
 class WebServer {
   constructor({ root, host, port, cacheExpirationTime }) {
     this.root = root || ".";
-    this.host = host || "0.0.0.0";
+    this.host = host || "localhost";
     this.port = port || 0;
     this.server = null;
     this.verbose = false;
