@@ -101,7 +101,6 @@ class Toolbar {
       // #2943 end of modification by ngx-extended-pdf-viewer
       // #2900 modified by ngx-extended-pdf-viewer - deactivate the buttons
       // because they're handled by TypeScript
-      /*
       {
         element: options.editorFreeTextButton,
         eventName: "switchannotationeditormode",
@@ -139,6 +138,18 @@ class Toolbar {
         },
       },
       {
+        element: options.editorEraserButton,
+        eventName: "switchannotationeditormode",
+        eventDetails:{
+          get mode(){
+            const { classList} = options.editorEraserButton;
+            return classList.contains("toggled")
+              ? AnnotationEditorType.NONE
+              : AnnotationEditorType.ERASER;
+          }
+        }
+      },
+      {
         element: options.editorStampButton,
         eventName: "switchannotationeditormode",
         eventDetails: {
@@ -154,7 +165,7 @@ class Toolbar {
           data: { action: "pdfjs.image.icon_click" },
         },
       },
-      */
+      
       // #2900 end of modification by ngx-extended-pdf-viewer
       {
         element: options.editorSignatureButton,
@@ -351,6 +362,8 @@ class Toolbar {
       editorHighlightParamsToolbar,
       editorInkButton,
       editorInkParamsToolbar,
+      editorEraserButton,
+      editorEraserParamsToolbar,
       editorStampButton,
       editorStampParamsToolbar,
       editorSignatureButton,
@@ -373,6 +386,11 @@ class Toolbar {
       editorInkParamsToolbar
     );
     toggleExpandedBtn(
+      editorEraserButton,
+      mode === AnnotationEditorType.ERASER,
+      editorEraserParamsToolbar
+    );
+    toggleExpandedBtn(
       editorStampButton,
       mode === AnnotationEditorType.STAMP,
       editorStampParamsToolbar
@@ -387,6 +405,7 @@ class Toolbar {
     editorFreeTextButton.disabled = isDisable;
     editorHighlightButton.disabled = isDisable;
     editorInkButton.disabled = isDisable;
+    editorEraserButton.disabled = isDisable;
     editorStampButton.disabled = isDisable;
     editorSignatureButton.disabled = isDisable;
   }

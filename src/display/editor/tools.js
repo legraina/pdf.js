@@ -1845,6 +1845,8 @@ class AnnotationEditorUIManager {
         (this.#showAllStates ||= new Map()).set(type, value);
         this.showAllEditors("highlight", value);
         break;
+      case AnnotationEditorParamsType.ERASER_THICKNESS:
+        this.updateEraserThickness("eraser", value);
     }
 
     for (const editor of this.#selectedEditors) {
@@ -1869,6 +1871,14 @@ class AnnotationEditorUIManager {
       this.#dispatchUpdateUI([
         [AnnotationEditorParamsType.HIGHLIGHT_SHOW_ALL, visible],
       ]);
+    }
+  }
+
+  updateEraserThickness(type, value){
+    for(const editor of this.#allEditors.values()){
+      if(editor.editorType === type){
+        editor.updateThickness(value);
+      }
     }
   }
 
@@ -2664,4 +2674,5 @@ export {
   ColorManager,
   CommandManager,
   KeyboardManager,
+  PointerType,
 };

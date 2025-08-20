@@ -123,6 +123,21 @@ class DrawingEditor extends AnnotationEditor {
     this.#updateBbox(drawOutlines.box);
   }
 
+  replaceOutlines(newOutlines){
+    if(!newOutlines || !this.parent || this._drawId == null){
+      return;
+    }
+    this.#drawOutlines = newOutlines;
+
+    this.parent.drawLayer.finalizeDraw(
+      this._drawId,
+      this.#drawOutlines.defaultProperties
+    )
+
+    this.#updateBbox(this.#drawOutlines.box);
+    this.rotate();
+  }
+
   #createDrawing(drawOutlines, parent) {
     const { id } = parent.drawLayer.draw(
       DrawingEditor._mergeSVGProperties(

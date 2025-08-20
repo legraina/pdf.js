@@ -26,11 +26,13 @@
 // eslint-disable-next-line max-len
 /** @typedef {import("../src/display/struct_tree_layer_builder.js").StructTreeLayerBuilder} StructTreeLayerBuilder */
 
+import { PointerType } from "./tools.js";
 import { AnnotationEditorType, FeatureTest } from "../../shared/util.js";
 import { AnnotationEditor } from "./editor.js";
 import { FreeTextEditor } from "./freetext.js";
 import { HighlightEditor } from "./highlight.js";
 import { InkEditor } from "./ink.js";
+import { EraserEditor } from "./eraser.js";
 import { setLayerDimensions } from "../display_utils.js";
 import { SignatureEditor } from "./signature.js";
 import { StampEditor } from "./stamp.js";
@@ -94,6 +96,7 @@ class AnnotationEditorLayer {
     [
       FreeTextEditor,
       InkEditor,
+      EraserEditor,
       StampEditor,
       HighlightEditor,
       SignatureEditor,
@@ -164,6 +167,7 @@ class AnnotationEditorLayer {
    */
   updateMode(mode = this.#uiManager.getMode()) {
     this.#cleanup();
+    this.#resetEditorPointerEvents();
     switch (mode) {
       case AnnotationEditorType.NONE:
         this.disableTextSelection();
@@ -175,6 +179,15 @@ class AnnotationEditorLayer {
         this.disableTextSelection();
         this.togglePointerEvents(true);
         this.enableClick();
+        break;
+      case AnnotationEditorType.ERASER:
+        this.#setEditorsPointerEvents(AnnotationEditorType.ERASER);
+
+        this.disableTextSelection();
+        this.togglePointerEvents(true);
+        this.enableClick();
+
+        this.addNewEditor({ /* eraser */});
         break;
       case AnnotationEditorType.HIGHLIGHT:
         this.enableTextSelection();
@@ -232,6 +245,21 @@ class AnnotationEditorLayer {
 
   toggleAnnotationLayerPointerEvents(enabled = false) {
     this.#annotationLayer?.div.classList.toggle("disabled", !enabled);
+  }
+
+  #setEditorsPointerEvents (exceptEditorType){
+    for(const editor of this.#editors.values()){
+      const editorType = editor._editorType;
+      if(editorType !== exceptEditorType){
+        editor.div.style.pointerEvents = "none";
+      }
+    }
+  }
+
+  #resetEditorPointerEvents(){
+    for(const editor of this.#editors.values()){
+      editor.div.style.pointerEvents = "";
+    }
   }
 
   /**
@@ -793,8 +821,9 @@ class AnnotationEditorLayer {
         return;
       }
       this.enableTextSelection();
-    } else if (this.#uiManager.getMode() === AnnotationEditorType.INK &&
-               !PointerType.sameAsEditor(event.pointerType)) {
+    } else if ((this.#uiManager.getMode() === AnnotationEditorType.INK ||
+                this.#uiManager.getMode() === AnnotationEditorType.ERASER) &&
+                !PointerType.sameAsEditor(event.pointerType)) {
       // The goal is to ensure that only the right pointer type can start a
       // drawing session
       return;
