@@ -1,8 +1,19 @@
 import { AnnotationEditor } from "./editor.js";
 import { AnnotationEditorParamsType, AnnotationEditorType } from "../../shared/util.js";
 import { InkEditor } from "./ink.js";
+import { noContextMenu, stopEvent } from "../display_utils.js";
 
 export class EraserEditor extends AnnotationEditor{
+
+    static #currentEraserAC = null;
+
+    static #currentPointerId = NaN;
+
+    static #currentPointerType = null;
+
+    static #currentPointerIds = null;
+
+    static #currentMoveTimestamp = NaN;
 
     #inkEditors = [];
 
@@ -25,9 +36,8 @@ export class EraserEditor extends AnnotationEditor{
         this._hideCursor = this.#hideCursor.bind(this);
 
         this._isErasing = false;
-        this._onPointerDown = this.#onPointerDown.bind(this);
-        this._onPointerMove = this.#onPointerMove.bind(this);
-        this._onPointerUp = this.#onPointerUp.bind(this);
+
+        this._startEraseSession = this.#startEraseSession.bind(this);
 
     }
 
@@ -146,8 +156,6 @@ export class EraserEditor extends AnnotationEditor{
         if(this.div){
             this.div.style.pointerEvents = "auto";
             this.div.style.zIndex = "1000";
-            this.div.style.touchAction = "none";
-            this.div.style.userSelect = "none";
 
             this._cursor = document.createElement('div');
             this._cursor.className = 'eraserCursor';
@@ -158,13 +166,10 @@ export class EraserEditor extends AnnotationEditor{
             this.div.appendChild(this._cursor);
 
             this.div.addEventListener('pointermove', this._updateCursor);
-            this.div.addEventListener('pointerenter', this._showCursor);
+            this.div.addEventListener('pointerenter', this._updateCursor);
             this.div.addEventListener('pointerleave', this._hideCursor);
 
-            this.div.addEventListener('pointerdown', this._onPointerDown);
-            this.div.addEventListener('pointermove', this._onPointerMove);
-            this.div.addEventListener('pointerup', this._onPointerUp);
-            this.div.addEventListener('pointercancel', this._onPointerUp);
+            this.div.addEventListener("pointerdown", this._startEraseSession);
         }
         
     }
@@ -174,6 +179,8 @@ export class EraserEditor extends AnnotationEditor{
         super.disableEditing();
         this.div?.classList.toggle("disabled", true);
 
+        this.#abortEraseSession();
+
         if(this._cursor){
             this._cursor.remove();
             this._cursor = null;
@@ -181,17 +188,13 @@ export class EraserEditor extends AnnotationEditor{
         if(this.div){
             this.div.style.pointerEvents = "";
             this.div.style.zIndex = "";
-            this.div.style.touchAction = "";
-            this.div.style.userSelect = "";
+
 
             this.div.removeEventListener('pointermove', this._updateCursor);
-            this.div.removeEventListener('pointerenter', this._showCursor);
+            this.div.removeEventListener('pointerenter', this._updateCursor);
             this.div.removeEventListener('pointerleave', this._hideCursor);
 
-            this.div.removeEventListener('pointerdown', this._onPointerDown);
-            this.div.removeEventListener('pointermove', this._onPointerMove);
-            this.div.removeEventListener('pointerup', this._onPointerUp);
-            this.div.removeEventListener('pointercancel', this._onPointerUp);
+            this.div.removeEventListener("pointerdown", this._startEraseSession);
         }
     }
 
@@ -199,15 +202,131 @@ export class EraserEditor extends AnnotationEditor{
     remove(){
         super.remove();
 
+        this.#abortEraseSession();
+
         if(this._cursor){
             this._cursor.remove();
             this._cursor = null;
         }
         if(this.div){
             this.div.removeEventListener('pointermove', this._updateCursor);
-            this.div.removeEventListener('pointerenter', this._showCursor);
+            this.div.removeEventListener('pointerenter', this._updateCursor);
             this.div.removeEventListener('pointerleave', this._hideCursor);
         }
+    }
+
+    #startEraseSession(event){
+        if(event.button !== 0) return;
+
+        const {pointerId, pointerType, target} = event;
+        if(EraserEditor.#currentPointerType &&
+            EraserEditor.#currentPointerType !== pointerType
+        ){
+            return;
+        }
+
+        this.#updateCursor(event);
+
+        const ac = (EraserEditor.#currentEraserAC = new AbortController());
+        const signal = this.parent.combinedSignal(ac);
+
+        EraserEditor.#currentPointerId ||= pointerId;
+        EraserEditor.#currentPointerType ??= pointerType;
+
+        window.addEventListener(
+            "pointerup",
+            e => {
+                if (EraserEditor.#currentPointerId === e.pointerId) {
+                    this.#endErase(e);
+                } else {
+                    EraserEditor.#currentPointerIds?.delete(e.pointerId);
+                }
+            },
+            { signal }
+        );
+        window.addEventListener(
+            "pointercancel",
+            e => {
+                if (EraserEditor.#currentPointerId === e.pointerId) {
+                    this.#endErase(e, /* isCanceled = */ true);
+                } else {
+                    EraserEditor.#currentPointerIds?.delete(e.pointerId);
+                }
+            },
+            { signal }
+        );
+        window.addEventListener(
+            "pointerdown",
+            e => {
+                if (EraserEditor.#currentPointerType !== e.pointerType) {
+                    return;
+                }
+                // Multi-pointer of same type (e.g., two fingers) -> stop erasing
+                (EraserEditor.#currentPointerIds ||= new Set()).add(e.pointerId);
+                if (this._isErasing) {
+                    this.#endErase(null, /* isCanceled = */ true);
+                }
+            },
+            { capture: true, passive: false, signal }
+        );
+        window.addEventListener("contextmenu", noContextMenu, { signal });
+
+        target.addEventListener(
+          "pointermove",
+          this.#onWindowPointerMove.bind(this),
+          { signal }
+        );
+
+        // Prevent touch scroll when the move is used for erasing
+        target.addEventListener(
+          "touchmove",
+          e => {
+            if (e.timeStamp === EraserEditor.#currentMoveTimestamp) {
+              stopEvent(e);
+            }
+          },
+          { signal }
+        );
+
+        this._isErasing = true;
+        this.#erase(event.clientX, event.clientY);
+        stopEvent(event);
+    }
+
+    
+    #onWindowPointerMove(event){
+        if (!this._isErasing) return;
+
+        const { pointerId } = event;
+
+        if (EraserEditor.#currentPointerId !== pointerId) {
+          return;
+        }
+        if (EraserEditor.#currentPointerIds?.size >= 1) {
+          // Multi-pointer gesture started: stop erasing
+          this.#endErase(event, /* isCanceled = */ true);
+          return;
+        }
+
+        this.#erase(event.clientX, event.clientY);
+        EraserEditor.#currentMoveTimestamp = event.timeStamp;
+        stopEvent(event);
+    }
+
+    #endErase(event, isCanceled = false){
+        this.#abortEraseSession();
+    }
+
+    #abortEraseSession(){
+        if (EraserEditor.#currentEraserAC) {
+            EraserEditor.#currentEraserAC.abort();
+            EraserEditor.#currentEraserAC = null;
+        }
+        EraserEditor.#currentPointerId = NaN;
+        EraserEditor.#currentPointerIds = null;
+        EraserEditor.#currentPointerType = null;
+        EraserEditor.#currentMoveTimestamp = NaN;
+        this._isErasing = false;
     }
 
     isEmpty(){
@@ -223,7 +342,6 @@ export class EraserEditor extends AnnotationEditor{
 
         this._cursor.style.left = `${x - this.thickness/2}px`;
         this._cursor.style.top  = `${y - this.thickness/2}px`;
-        this._cursor.style.display = 'block';
 
         this.#showCursor();
     }
@@ -241,20 +359,20 @@ export class EraserEditor extends AnnotationEditor{
         return editors.filter(ed => ed.editorType === "ink" && ed?.parent?.div && ed?.div);
     }
 
-    #onPointerDown(event){
-        if (event.button !== 0) return;
-        this._isErasing = true;
-        this.#erase(event.clientX, event.clientY);
-    }
+    // #onPointerDown(event){
+    //     if (event.button !== 0) return;
+    //     this._isErasing = true;
+    //     this.#erase(event.clientX, event.clientY);
+    // }
 
-    #onPointerMove(event){
-        if (!this._isErasing) return;
-        this.#erase(event.clientX, event.clientY);
-    }
+    // #onPointerMove(event){
+    //     if (!this._isErasing) return;
+    //     this.#erase(event.clientX, event.clientY);
+    // }
 
-    #onPointerUp(event){
-        this._isErasing = false;
-    }
+    // #onPointerUp(event){
+    //     this._isErasing = false;
+    // }
     
 
     #erase(clientX, clientY) {
@@ -298,13 +416,13 @@ export class EraserEditor extends AnnotationEditor{
                     }
                     else{
                         modified = true;
-                        if(newPath.length > 1){
+                        if(newPath.length > 3){
                             newPaths.push(new Float32Array(newPath));
-                            newPath = [];
                         }
+                        newPath = [];
                     }
                 }
-                if(newPath.length > 1){
+                if(newPath.length > 3){
                     newPaths.push(new Float32Array(newPath));
                 }
             }
@@ -343,6 +461,7 @@ export class EraserEditor extends AnnotationEditor{
         );
 
         editor.replaceOutlines(newOutlines);
+        editor.onScaleChanging();
     }
 
 
