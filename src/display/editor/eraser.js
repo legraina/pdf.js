@@ -39,6 +39,7 @@ export class EraserEditor extends AnnotationEditor{
 
         this._startEraseSession = this.#startEraseSession.bind(this);
 
+        this._erased = new Map();
     }
 
     /** @inheritdoc */
@@ -161,7 +162,7 @@ export class EraserEditor extends AnnotationEditor{
             this._cursor.className = 'eraserCursor';
             this._cursor.style.width = `${this.thickness}px`;
             this._cursor.style.height = `${this.thickness}px`;
-            this._cursor.style.display = 'none'
+            this._cursor.style.display = 'none';
             this._cursor.style.pointerEvents = "none";
             this.div.appendChild(this._cursor);
 
@@ -218,12 +219,19 @@ export class EraserEditor extends AnnotationEditor{
     #startEraseSession(event){
         if(event.button !== 0) return;
 
+        if(event.pointerType === "touch"){
+            this.#hideCursor();
+            return;
+        }
+
         const {pointerId, pointerType, target} = event;
         if(EraserEditor.#currentPointerType &&
             EraserEditor.#currentPointerType !== pointerType
         ){
             return;
         }
+
+        this._erased.clear();
 
         this.#updateCursor(event);
 
@@ -248,7 +256,7 @@ export class EraserEditor extends AnnotationEditor{
             "pointercancel",
             e => {
                 if (EraserEditor.#currentPointerId === e.pointerId) {
-                    this.#endErase(e, /* isCanceled = */ true);
+                    this.#endErase(e);
                 } else {
                     EraserEditor.#currentPointerIds?.delete(e.pointerId);
                 }
@@ -264,7 +272,7 @@ export class EraserEditor extends AnnotationEditor{
                 // Multi-pointer of same type (e.g., two fingers) -> stop erasing
                 (EraserEditor.#currentPointerIds ||= new Set()).add(e.pointerId);
                 if (this._isErasing) {
-                    this.#endErase(null, /* isCanceled = */ true);
+                    this.#endErase(null);
                 }
             },
             { capture: true, passive: false, signal }
@@ -304,7 +312,7 @@ export class EraserEditor extends AnnotationEditor{
         }
         if (EraserEditor.#currentPointerIds?.size >= 1) {
           // Multi-pointer gesture started: stop erasing
-          this.#endErase(event, /* isCanceled = */ true);
+          this.#endErase(event);
           return;
         }
 
@@ -313,8 +321,21 @@ export class EraserEditor extends AnnotationEditor{
         stopEvent(event);
     }
 
-    #endErase(event, isCanceled = false){
+    #endErase(event){
+        if(event){
+            this.#erase(event.clientX, event.clientY);
+        }
+        this.#commit();
         this.#abortEraseSession();
+    }
+
+    #commit(){
+        if(this._erased && this._erased.size > 0){
+            for (const [editor, newPaths] of this._erased) {
+                this.#commitInkEditorPaths(editor, newPaths);
+            }
+        }
+        this._erased.clear();
     }
 
     #abortEraseSession(){
@@ -327,6 +348,7 @@ export class EraserEditor extends AnnotationEditor{
         EraserEditor.#currentPointerType = null;
         EraserEditor.#currentMoveTimestamp = NaN;
         this._isErasing = false;
+        this._erased.clear();
     }
 
     isEmpty(){
@@ -334,7 +356,12 @@ export class EraserEditor extends AnnotationEditor{
     }
 
     #updateCursor(event){
-        if(!this._cursor) return ;
+        if(!this._cursor) return;
+
+        if(event?.pointerType === "touch" && !this._isErasing){
+            this.#hideCursor();
+            return;
+        }
 
         const rect = this.parent.div.getBoundingClientRect();
         const x = event.clientX - rect.left;
@@ -359,22 +386,6 @@ export class EraserEditor extends AnnotationEditor{
         return editors.filter(ed => ed.editorType === "ink" && ed?.parent?.div && ed?.div);
     }
 
-    // #onPointerDown(event){
-    //     if (event.button !== 0) return;
-    //     this._isErasing = true;
-    //     this.#erase(event.clientX, event.clientY);
-    // }
-
-    // #onPointerMove(event){
-    //     if (!this._isErasing) return;
-    //     this.#erase(event.clientX, event.clientY);
-    // }
-
-    // #onPointerUp(event){
-    //     this._isErasing = false;
-    // }
-    
-
     #erase(clientX, clientY) {
 
         const layerRect = this.parent.div.getBoundingClientRect();
@@ -398,7 +409,7 @@ export class EraserEditor extends AnnotationEditor{
             const bottom = top + ch * scale;
             if (!this.#hitBBox(x, y, radius, [left, top, right, bottom])) continue;
 
-            const { points } = editor.serializeDraw(false);
+            const points = this._erased.get(editor) ?? editor.serializeDraw(false).points;
 
             const newPaths = [];
 
@@ -416,23 +427,51 @@ export class EraserEditor extends AnnotationEditor{
                     }
                     else{
                         modified = true;
-                        if(newPath.length > 3){
+                        if(newPath.length >= 4){
                             newPaths.push(new Float32Array(newPath));
                         }
                         newPath = [];
                     }
                 }
-                if(newPath.length > 3){
+                if(newPath.length >= 4){
                     newPaths.push(new Float32Array(newPath));
                 }
             }
             if(modified){
-                this.#replaceInkEditorPaths(editor, newPaths);
+                this._erased.set(editor, newPaths);
+                this.#previewInkEditorPaths(editor, newPaths);
             }
         }
     }
 
-    #replaceInkEditorPaths(editor, newPaths){
+    #previewInkEditorPaths(editor, newPaths){
+        if(!newPaths || newPaths.length === 0){
+            editor.parent.drawLayer.updateProperties(editor._drawId, {
+                path: { d: "" },
+            });
+            return;
+        }
+
+        const {
+          viewport: {
+            rawDims: { pageWidth, pageHeight, pageX, pageY },
+          },
+        } = editor.parent;
+
+        const thickness = editor._drawingOptions["stroke-width"];
+        const rotation = editor.rotation;
+
+        const tempOutline = InkEditor.deserializeDraw(
+            pageX, pageY, pageWidth, pageHeight, InkEditor._INNER_MARGIN,
+            { paths: { points: newPaths}, rotation, thickness}
+        );
+
+        editor.parent.drawLayer.updateProperties(editor._drawId, {
+            path: { d: tempOutline.toSVGPath() },
+        });
+    }
+
+    #commitInkEditorPaths(editor, newPaths){
         if(!newPaths || newPaths.length === 0){
             editor.remove();
             return;
@@ -464,7 +503,6 @@ export class EraserEditor extends AnnotationEditor{
         editor.onScaleChanging();
     }
 
-
     #hitBBox(x, y, r, rect) {
         const [left, top, right, bottom] = rect;
         const cx = Math.max(left, Math.min(x, right));
@@ -474,40 +512,38 @@ export class EraserEditor extends AnnotationEditor{
         return dx * dx + dy * dy <= r * r;
     }
 
+    
+    #pagePointToLayer(px, py, editor) {
+        const [pageX, pageY] = editor.pageTranslation;
+        const [pageW, pageH] = editor.pageDimensions;
+        const { width: layerW, height: layerH } =
+          editor.parent.div.getBoundingClientRect();
 
-  #pagePointToLayer(px, py, editor) {
-    const [pageX, pageY] = editor.pageTranslation;
-    const [pageW, pageH] = editor.pageDimensions;
-    const { width: layerW, height: layerH } =
-      editor.parent.div.getBoundingClientRect();
+        let nx = (px - pageX) / pageW;
+        let ny = (py - pageY) / pageH;
 
-    let nx = (px - pageX) / pageW;
-    let ny = (py - pageY) / pageH;
+        let rx, ry;
+        switch ((editor.rotation || 0) % 360) {
+          case 90:
+            rx = ny;
+            ry = 1 - nx;
+            break;
+          case 180:
+            rx = 1 - nx;
+            ry = 1 - ny;
+            break;
+          case 270:
+            rx = 1 - ny;
+            ry = nx;
+            break;
+          default:
+            rx = nx;
+            ry = ny;
+            break;
+        }
 
-    let rx, ry;
-    switch ((editor.rotation || 0) % 360) {
-      case 90:
-        rx = ny;
-        ry = 1 - nx;
-        break;
-      case 180:
-        rx = 1 - nx;
-        ry = 1 - ny;
-        break;
-      case 270:
-        rx = 1 - ny;
-        ry = nx;
-        break;
-      default:
-        rx = nx;
-        ry = ny;
-        break;
+        const lx = rx * layerW;
+        const ly = (1 - ry) * layerH;
+        return [lx, ly];
     }
-
-    const lx = rx * layerW;
-    const ly = (1 - ry) * layerH;
-    return [lx, ly];
-  }
-
-
 }
