@@ -19,6 +19,11 @@ function preventDefault(evt) {
   evt.preventDefault();
 }
 
+// Use Gecko's pinch-span epsilon:
+// https://searchfox.org/mozilla-central/source/gfx/layers/apz/src/AsyncPanZoomController.cpp#1775-1788
+// https://searchfox.org/mozilla-central/source/gfx/layers/apz/src/Axis.h#21
+const MIN_TOUCH_SPAN = 1e-4;
+
 class TouchManager {
   #container;
 
@@ -37,6 +42,8 @@ class TouchManager {
   #pointerDownAC = null;
 
   #signal;
+
+  #touchIds = new Set();
 
   #touchInfo = null;
 
@@ -87,37 +94,14 @@ class TouchManager {
       return;
     }
 
-    if (evt.touches.length === 1) {
-      if (this.#pointerDownAC) {
-        return;
-      }
-      const pointerDownAC = (this.#pointerDownAC = new AbortController());
-      const signal = AbortSignal.any([this.#signal, pointerDownAC.signal]);
-      const container = this.#container;
+    this.#pruneTouchIds(evt);
+    const touchIds = this.#touchIds;
+    for (const { identifier } of evt.changedTouches) {
+      touchIds.add(identifier);
+    }
 
-      // We want to have the events at the capture phase to make sure we can
-      // cancel them.
-      const opts = { capture: true, signal, passive: false };
-      const cancelPointerDown = e => {
-        if (e.pointerType === "touch") {
-          this.#pointerDownAC?.abort();
-          this.#pointerDownAC = null;
-        }
-      };
-      container.addEventListener(
-        "pointerdown",
-        e => {
-          if (e.pointerType === "touch") {
-            // This is the second finger so we don't want it select something
-            // or whatever.
-            stopEvent(e);
-            cancelPointerDown(e);
-          }
-        },
-        opts
-      );
-      container.addEventListener("pointerup", cancelPointerDown, opts);
-      container.addEventListener("pointercancel", cancelPointerDown, opts);
+    if (touchIds.size === 1) {
+      this.#armPointerDown();
       return;
     }
 
@@ -150,16 +134,106 @@ class TouchManager {
     }
 
     stopEvent(evt);
+    this.#setTouchInfo(evt);
+  }
 
-    if (evt.touches.length !== 2 || this.#isPinchingStopped?.()) {
+  /**
+   * Swallow the `pointerdown` of the next finger to land while one is already
+   * down on the container.
+   *
+   * That finger is about to become the second one of a two-finger gesture, so
+   * it must neither select anything nor start a session of its own, e.g. an
+   * editor drag: the latter listens on `window`, hence the capture-phase
+   * listeners which `#touchMoveAC` adds on the container run too late to stop
+   * it, and swallowing the `pointerdown` itself is the only chance to.
+   */
+  #armPointerDown() {
+    if (this.#pointerDownAC) {
+      return;
+    }
+    const pointerDownAC = (this.#pointerDownAC = new AbortController());
+    const signal = AbortSignal.any([this.#signal, pointerDownAC.signal]);
+    const container = this.#container;
+
+    // We want to have the events at the capture phase to make sure we can
+    // cancel them.
+    const opts = { capture: true, signal, passive: false };
+    const cancelPointerDown = e => {
+      if (e.pointerType === "touch") {
+        this.#pointerDownAC?.abort();
+        this.#pointerDownAC = null;
+      }
+    };
+    container.addEventListener(
+      "pointerdown",
+      e => {
+        if (e.pointerType === "touch") {
+          // This is the second finger so we don't want it select something
+          // or whatever.
+          stopEvent(e);
+          cancelPointerDown(e);
+        }
+      },
+      opts
+    );
+    container.addEventListener("pointerup", cancelPointerDown, opts);
+    container.addEventListener("pointercancel", cancelPointerDown, opts);
+  }
+
+  /**
+   * Drop, from the tracked identifiers, the fingers which are no longer down.
+   *
+   * `evt.touches` lists every active touch in the document, whereas an element
+   * listener only receives events targeted at that element or bubbling from
+   * its descendants. Intersect with the document-wide list because an end
+   * event for a tracked touch can be stopped before reaching this manager.
+   * @param {TouchEvent} evt
+   */
+  #pruneTouchIds(evt) {
+    const previous = this.#touchIds;
+    if (previous.size === 0) {
+      return;
+    }
+    const touchIds = (this.#touchIds = new Set());
+    for (const { identifier } of evt.touches) {
+      if (previous.has(identifier)) {
+        touchIds.add(identifier);
+      }
+    }
+  }
+
+  /**
+   * @param {TouchEvent} evt
+   * @returns {Array<Touch>} The tracked fingers which are still down.
+   */
+  #getTrackedTouches(evt) {
+    const touchIds = this.#touchIds;
+    const touches = [];
+    for (const touch of evt.touches) {
+      if (touchIds.has(touch.identifier)) {
+        touches.push(touch);
+      }
+    }
+    return touches;
+  }
+
+  /**
+   * Take the current position of the two tracked fingers as the new baseline.
+   *
+   * `#isPinching` is deliberately left as it is, and is only reset when the
+   * gesture ends: a pinch in progress mustn't have to earn
+   * `MIN_TOUCH_DISTANCE_TO_PINCH` all over again because a third finger landed
+   * and was lifted.
+   * @param {TouchEvent} evt
+   */
+  #setTouchInfo(evt) {
+    const touches = this.#getTrackedTouches(evt);
+    if (touches.length !== 2 || this.#isPinchingStopped?.()) {
       this.#touchInfo = null;
       return;
     }
 
-    let [touch0, touch1] = evt.touches;
-    if (touch0.identifier > touch1.identifier) {
-      [touch0, touch1] = [touch1, touch0];
-    }
+    const [touch0, touch1] = touches;
     this.#touchInfo = {
       touch0X: touch0.screenX,
       touch0Y: touch0.screenY,
@@ -169,16 +243,17 @@ class TouchManager {
   }
 
   #onTouchMove(evt) {
-    if (!this.#touchInfo || evt.touches.length !== 2) {
+    if (!this.#touchInfo) {
+      return;
+    }
+    const touches = this.#getTrackedTouches(evt);
+    if (touches.length !== 2) {
       return;
     }
 
     stopEvent(evt);
 
-    let [touch0, touch1] = evt.touches;
-    if (touch0.identifier > touch1.identifier) {
-      [touch0, touch1] = [touch1, touch0];
-    }
+    const [touch0, touch1] = touches;
     const { screenX: screen0X, screenY: screen0Y } = touch0;
     const { screenX: screen1X, screenY: screen1Y } = touch1;
     const touchInfo = this.#touchInfo;
@@ -194,13 +269,13 @@ class TouchManager {
     const currGapX = screen1X - screen0X;
     const currGapY = screen1Y - screen0Y;
 
-    const distance = Math.hypot(currGapX, currGapY) || 1;
-    const pDistance = Math.hypot(prevGapX, prevGapY) || 1;
+    const distance = Math.hypot(currGapX, currGapY);
+    const pDistance = Math.hypot(prevGapX, prevGapY);
     if (
-      !this.#isPinching &&
-      // #3260: upstream now reads MIN_TOUCH_DISTANCE_TO_PINCH off the instance
-      // too (it is an instance getter), so the fork no longer diverges here.
-      Math.abs(pDistance - distance) <= this.MIN_TOUCH_DISTANCE_TO_PINCH
+      distance < MIN_TOUCH_SPAN ||
+      pDistance < MIN_TOUCH_SPAN ||
+      (!this.#isPinching &&
+        Math.abs(pDistance - distance) <= this.MIN_TOUCH_DISTANCE_TO_PINCH)
     ) {
       return;
     }
@@ -228,25 +303,45 @@ class TouchManager {
   }
 
   #onTouchEnd(evt) {
-    if (evt.touches.length >= 2) {
+    this.#pruneTouchIds(evt);
+    if (this.#touchIds.size >= 2) {
+      // Re-evaluate the remaining tracked touches; exactly two form a new
+      // baseline.
+      this.#setTouchInfo(evt);
       return;
     }
-    // #touchMoveAC shouldn't be null but it seems that irl it can (see #19793).
+    // Fewer than two tracked touches remain, so this manager's gesture is over;
+    // unrelated entries in the document-wide touch list must not keep it alive.
+    // Swallow the end only while a two-touch baseline is active.
+    const wasTracking = !!this.#touchInfo;
+    this.#endGesture();
+
+    if (this.#touchIds.size === 1) {
+      // A finger which started on the container is still down, so the gesture
+      // is back to its one-finger state: the next finger to land must be
+      // swallowed again. Without this, lifting one finger of a pinch and
+      // putting it back down would let its `pointerdown` through.
+      this.#armPointerDown();
+    }
+    if (wasTracking) {
+      stopEvent(evt);
+    }
+  }
+
+  #endGesture() {
+    // `#setTouchInfo` may already have cleared the baseline.
+    this.#touchInfo = null;
+    this.#isPinching = false;
     if (this.#touchMoveAC) {
       this.#touchMoveAC.abort();
       this.#touchMoveAC = null;
       this.#onPinchEnd?.();
     }
-
-    if (!this.#touchInfo) {
-      return;
-    }
-    stopEvent(evt);
-    this.#touchInfo = null;
-    this.#isPinching = false;
   }
 
   destroy() {
+    this.#endGesture();
+    this.#touchIds.clear();
     this.#touchManagerAC?.abort();
     this.#touchManagerAC = null;
     this.#pointerDownAC?.abort();

@@ -2960,7 +2960,7 @@ class CanvasGraphics {
       }
 
       const spacing = (glyph.isSpace ? wordSpacing : 0) + charSpacing;
-      const operatorList = font.charProcOperatorList[glyph.operatorListId];
+      const operatorList = font.charProcOperatorList.get(glyph.operatorListId);
       if (!operatorList) {
         warn(`Type3 character "${glyph.operatorListId}" is not available.`);
       } else if (this.contentVisible) {
@@ -3703,11 +3703,6 @@ class CanvasGraphics {
         transform = transform.slice();
         transform[4] -= rect[0];
         transform[5] -= rect[1];
-
-        rect = rect.slice();
-        rect[0] = rect[1] = 0;
-        rect[2] = width;
-        rect[3] = height;
 
         Util.singularValueDecompose2dScale(getCurrentTransform(this.ctx), XY);
         const { viewportScale } = this;
