@@ -1034,11 +1034,15 @@ class PDFDocumentProxy {
 
   /**
    * @param {Array<PageInfo>} pageInfos - The pages to extract.
+   * @param {Int32Array} [copyLevels] - For each viewer page, its rank among the
+   *  extracted pages sharing the same source page, or -1 if it isn't extracted.
+   *  This routes editor annotations when the viewer contains multiple copies
+   *  of a source page.
    * @returns {Promise<Uint8Array>} A promise that is resolved with a
    *   {Uint8Array} containing the full data of the saved document.
    */
-  extractPages(pageInfos) {
-    return this._transport.extractPages(pageInfos);
+  extractPages(pageInfos, copyLevels = null) {
+    return this._transport.extractPages(pageInfos, copyLevels);
   }
 
   /**
@@ -2986,7 +2990,7 @@ class WorkerTransport {
   }
   // #2943 end of modification by ngx-extended-pdf-viewer
 
-  extractPages(pageInfos) {
+  extractPages(pageInfos, copyLevels = null) {
     const params = {
       pageInfos,
     };
@@ -3013,6 +3017,8 @@ class WorkerTransport {
       // Annotation pageIndex tracks the editor's current viewer position; the
       // worker keys lookups by source index. Remap UI -> source via pagesMapper
       // so reorganized pages still receive their annotations after extraction.
+      // Multiple viewer pages can share a source page. The copy level routes
+      // each editor annotation to the corresponding extracted copy.
       const mapping = this.pagesMapper.getMapping();
       if (mapping) {
         const remapped = new Map();
@@ -3022,9 +3028,13 @@ class WorkerTransport {
             v.pageIndex >= 0 &&
             v.pageIndex < mapping.length
           ) {
+            // copyLevels uses -1 for non-extracted pages. Keep their entries
+            // because an extracted stamp may share their bitmapId; the worker
+            // uses the negative level to skip the annotation itself.
+            const copyLevel = copyLevels?.[v.pageIndex] ?? 0;
             const sourceIdx = mapping[v.pageIndex] - 1;
-            if (sourceIdx !== v.pageIndex) {
-              remapped.set(k, { ...v, pageIndex: sourceIdx });
+            if (sourceIdx !== v.pageIndex || copyLevel !== 0) {
+              remapped.set(k, { ...v, pageIndex: sourceIdx, copyLevel });
               continue;
             }
           }
