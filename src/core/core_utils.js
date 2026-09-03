@@ -341,7 +341,8 @@ function lookupNormalRect(arr, fallback) {
  * each part of the path.
  */
 function parseXFAPath(path) {
-  const positionPattern = /(.+)\[(\d+)\]$/;
+  // Anchoring prevents retrying the match at every character.
+  const positionPattern = /^(.+)\[(\d+)\]$/;
   return path.split(".").map(component => {
     const m = component.match(positionPattern);
     if (m) {
@@ -449,7 +450,7 @@ function _collectJS(entry, xref, list, parents) {
 }
 
 function collectActions(xref, dict, eventType) {
-  const actions = Object.create(null);
+  const actions = new Map();
   const additionalActionsDicts = getInheritableProperty({
     dict,
     key: "AA",
@@ -475,7 +476,7 @@ function collectActions(xref, dict, eventType) {
         const list = [];
         _collectJS(rawActionDict, xref, list, parents);
         if (list.length > 0) {
-          actions[action] = list;
+          actions.set(action, list);
         }
       }
     }
@@ -487,10 +488,10 @@ function collectActions(xref, dict, eventType) {
     const list = [];
     _collectJS(actionDict, xref, list, parents);
     if (list.length > 0) {
-      actions.Action = list;
+      actions.set("Action", list);
     }
   }
-  return Object.keys(actions).length ? actions : null;
+  return actions.size ? actions : null;
 }
 
 const XMLEntities = {
@@ -572,6 +573,18 @@ function validateFontName(fontFamily, mustWarn = false) {
     }
   }
   return true;
+}
+
+// Strip the spaces preceding a digit, since e.g. "Wingdings 3" is not a valid
+// font name in the css specs.
+// The optional trailing digit is matched as part of the space run, so that a
+// failing match cannot backtrack over the spaces; otherwise the replacement
+// would be quadratic in the number of consecutive spaces.
+function normalizeCSSFontFamily(fontFamily) {
+  return fontFamily.replaceAll(
+    /( +)(\d)?/g,
+    (_, spaces, digit) => digit ?? " "
+  );
 }
 
 function validateCSSFont(cssFontInfo) {
@@ -750,6 +763,7 @@ export {
   lookupRect,
   MAX_INT_32,
   MissingDataException,
+  normalizeCSSFontFamily,
   numberToString,
   ParserEOFException,
   parseXFAPath,

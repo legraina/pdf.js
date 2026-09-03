@@ -13,10 +13,10 @@
  * limitations under the License.
  */
 
-import { createActionsMap, FieldType, getFieldType } from "./common.js";
+import { createMap, FieldType, getFieldType } from "./common.js";
+import { makeArr, serializeError } from "./app_utils.js";
 import { Color } from "./color.js";
 import { PDFObject } from "./pdf_object.js";
-import { serializeError } from "./app_utils.js";
 
 class Field extends PDFObject {
   constructor(data) {
@@ -65,7 +65,7 @@ class Field extends PDFObject {
     this.userName = data.userName;
 
     // Private
-    this._actions = createActionsMap(data.actions);
+    this._actions = createMap(data.actions);
     this._browseForFileToSubmit = data.browseForFileToSubmit || null;
     this._buttonCaption = null;
     this._buttonIcon = null;
@@ -98,10 +98,7 @@ class Field extends PDFObject {
   }
 
   get currentValueIndices() {
-    if (!this._isChoice) {
-      return 0;
-    }
-    return this._currentValueIndices;
+    return !this._isChoice ? 0 : this._currentValueIndices;
   }
 
   set currentValueIndices(indices) {
@@ -499,10 +496,7 @@ class Field extends PDFObject {
     if (typeof cTrigger !== "string" || typeof cScript !== "string") {
       return;
     }
-    if (!(cTrigger in this._actions)) {
-      this._actions[cTrigger] = [];
-    }
-    this._actions[cTrigger].push(cScript);
+    this._actions.getOrInsertComputed(cTrigger, makeArr).push(cScript);
   }
 
   setFocus() {
@@ -584,7 +578,7 @@ class RadioButtonField extends Field {
     for (const radioData of otherButtons) {
       this.exportValues.push(radioData.exportValues);
       this._radioIds.push(radioData.id);
-      this._radioActions.push(createActionsMap(radioData.actions));
+      this._radioActions.push(createMap(radioData.actions));
       if (this._value === radioData.exportValues) {
         this._id = radioData.id;
       }
@@ -683,17 +677,13 @@ class CheckboxField extends RadioButtonField {
   }
 
   isBoxChecked(nWidget) {
-    if (this._value === "Off") {
-      return false;
-    }
-    return super.isBoxChecked(nWidget);
+    return this._value === "Off" ? false : super.isBoxChecked(nWidget);
   }
 
   isDefaultChecked(nWidget) {
-    if (this.defaultValue === "Off") {
-      return this._value === "Off";
-    }
-    return super.isDefaultChecked(nWidget);
+    return this.defaultValue === "Off"
+      ? this._value === "Off"
+      : super.isDefaultChecked(nWidget);
   }
 
   checkThisBox(nWidget, bCheckIt = true) {

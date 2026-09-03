@@ -2094,10 +2094,12 @@ class PDFViewer {
         // #3069 end of modification by ngx-extended-pdf-viewer
         // #3069 modified by ngx-extended-pdf-viewer
         // Reverted to native pdf.js approach: scrollPageIntoView() + origin
-        // adjustment using containerTopLeft (offsetTop/offsetLeft).
-        // The origin now uses screenX/Y (reverted in touch_manager.js).
-        // Both are stable values that don't change with scroll or layout,
-        // unlike getBoundingClientRect() which caused cumulative drift.
+        // adjustment. The origin is in client coordinates (touch_manager.js
+        // uses clientX/Y, like a wheel event), so the adjustment below
+        // subtracts getBoundingClientRect() rather than containerTopLeft
+        // (offsetTop/offsetLeft), which is relative to the offset parent when
+        // the viewer is embedded in an Angular layout. The cumulative drift
+        // seen earlier is handled by the frozen location/scale above.
         {
           const c = this.container;
 
@@ -2166,13 +2168,10 @@ class PDFViewer {
   }
 
   get #pageWidthScaleFactor() {
-    if (
-      this._spreadMode !== SpreadMode.NONE &&
+    return this._spreadMode !== SpreadMode.NONE &&
       this._scrollMode !== ScrollMode.HORIZONTAL
-    ) {
-      return 2;
-    }
-    return 1;
+      ? 2
+      : 1;
   }
 
   #setScale(value, options) {
@@ -2510,19 +2509,20 @@ class PDFViewer {
       scrollLeft - firstPage.x,
       scrollTop - firstPage.y
     );
-    const intLeft = Math.round(topLeft[0]);
-    const intTop = Math.round(topLeft[1]);
+    const [left, top] = topLeft;
 
     let pdfOpenParams = `#page=${pageNumber}`;
     if (!this.isInPresentationMode) {
-      pdfOpenParams += `&zoom=${normalizedScaleValue},${intLeft},${intTop}`;
+      pdfOpenParams +=
+        `&zoom=${normalizedScaleValue},` +
+        `${Math.round(left)},${Math.round(top)}`;
     }
 
     this._location = {
       pageNumber,
       scale: normalizedScaleValue,
-      top: intTop,
-      left: intLeft,
+      top,
+      left,
       rotation: this._pagesRotation,
       pdfOpenParams,
     };
