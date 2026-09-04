@@ -2171,6 +2171,9 @@ class AnnotationEditor {
     }
   }
 
+  /**
+   * @returns {Array<number>|null}
+   */
   get toolbarPosition() {
     return null;
   }

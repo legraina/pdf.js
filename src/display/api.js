@@ -700,6 +700,15 @@ class PDFDocumentProxy {
     this._pdfInfo = pdfInfo;
     this._transport = transport;
 
+    if (
+      typeof PDFJSDev === "undefined" ||
+      PDFJSDev.test("TESTING || INTERNAL_VIEWER")
+    ) {
+      // For the PDF debugger.
+      Object.defineProperty(this, "getRawData", {
+        value: data => this._transport.getRawData(data),
+      });
+    }
     if (typeof PDFJSDev === "undefined" || PDFJSDev.test("TESTING")) {
       // For testing purposes.
       Object.defineProperty(this, "getNetworkStreamName", {
@@ -1052,10 +1061,6 @@ class PDFDocumentProxy {
    */
   getDownloadInfo() {
     return this._transport.downloadInfoCapability.promise;
-  }
-
-  getRawData(data) {
-    return this._transport.getRawData(data);
   }
 
   /**
@@ -2505,6 +2510,15 @@ class WorkerTransport {
 
     this.setupMessageHandler();
 
+    if (
+      typeof PDFJSDev === "undefined" ||
+      PDFJSDev.test("TESTING || INTERNAL_VIEWER")
+    ) {
+      // For the PDF debugger.
+      Object.defineProperty(this, "getRawData", {
+        value: data => this.messageHandler.sendWithPromise("GetRawData", data),
+      });
+    }
     if (typeof PDFJSDev === "undefined" || PDFJSDev.test("TESTING")) {
       // For testing purposes.
       Object.defineProperty(this, "getNetworkStreamName", {
@@ -3252,10 +3266,6 @@ class WorkerTransport {
 
   getMarkInfo() {
     return this.messageHandler.sendWithPromise("GetMarkInfo", null);
-  }
-
-  getRawData(data) {
-    return this.messageHandler.sendWithPromise("GetRawData", data);
   }
 
   async startCleanup(keepLoadedFonts = false) {
