@@ -19,7 +19,7 @@
 /** @typedef {import("./tools.js").AnnotationEditorUIManager} AnnotationEditorUIManager */
 
 import { AnnotationEditorParamsType, unreachable } from "../../shared/util.js";
-import { bindEvents, CurrentPointers } from "./tools.js";
+import { bindEvents } from "./tools.js";
 import { noContextMenu, stopEvent } from "../display_utils.js";
 import { AnnotationEditor } from "./editor.js";
 
