@@ -67,18 +67,20 @@ if (!Promise.allSettled) {
 }
 // end of modification ngx-extended-pdf-viewer #358
 class WorkerTask {
+  #capability = Promise.withResolvers();
+
+  terminated = false;
+
   constructor(name) {
     this.name = name;
-    this.terminated = false;
-    this._capability = Promise.withResolvers();
   }
 
   get finished() {
-    return this._capability.promise;
+    return this.#capability.promise;
   }
 
   finish() {
-    this._capability.resolve();
+    this.#capability.resolve();
   }
 
   terminate() {

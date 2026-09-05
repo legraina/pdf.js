@@ -62,9 +62,7 @@ class Cmd {
   }
 }
 
-const nonSerializable = function nonSerializableClosure() {
-  return nonSerializable; // Creating closure on some variable.
-};
+const nonSerializable = () => nonSerializable; // Creating closure on some variable.
 
 class Dict {
   __nonSerializable__ = nonSerializable; // Disable cloning of the Dict.
@@ -89,7 +87,7 @@ class Dict {
     return this.#map.size;
   }
 
-  #getValue(isAsync, key1, key2, key3) {
+  #getValue(isAsync, key1, key2) {
     let value = this.#map.get(key1);
     if (value === undefined && key2 !== undefined) {
       if (
@@ -99,15 +97,6 @@ class Dict {
         unreachable("Dict.#getValue: Expected keys to be ordered by length.");
       }
       value = this.#map.get(key2);
-      if (value === undefined && key3 !== undefined) {
-        if (
-          (typeof PDFJSDev === "undefined" || PDFJSDev.test("TESTING")) &&
-          key3.length < key2.length
-        ) {
-          unreachable("Dict.#getValue: Expected keys to be ordered by length.");
-        }
-        value = this.#map.get(key3);
-      }
     }
     if (value instanceof Ref && this.xref) {
       return isAsync
@@ -118,18 +107,18 @@ class Dict {
   }
 
   // Automatically dereferences Ref objects.
-  get(key1, key2, key3) {
-    return this.#getValue(/* isAsync = */ false, key1, key2, key3);
+  get(key1, key2) {
+    return this.#getValue(/* isAsync = */ false, key1, key2);
   }
 
   // Same as get(), but returns a promise and uses fetchIfRefAsync().
-  async getAsync(key1, key2, key3) {
-    return this.#getValue(/* isAsync = */ true, key1, key2, key3);
+  async getAsync(key1, key2) {
+    return this.#getValue(/* isAsync = */ true, key1, key2);
   }
 
   // Same as get(), but dereferences all elements if the result is an Array.
-  getArray(key1, key2, key3) {
-    let value = this.#getValue(/* isAsync = */ false, key1, key2, key3);
+  getArray(key1, key2) {
+    let value = this.#getValue(/* isAsync = */ false, key1, key2);
 
     if (Array.isArray(value)) {
       value = value.slice(); // Ensure that we don't modify the Dict data.

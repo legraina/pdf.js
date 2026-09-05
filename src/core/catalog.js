@@ -335,19 +335,12 @@ class Catalog {
     if (!(obj instanceof Dict)) {
       return null;
     }
+    const markInfo = new Map();
 
-    const markInfo = {
-      Marked: false,
-      UserProperties: false,
-      Suspects: false,
-    };
-    for (const key in markInfo) {
-      const value = obj.get(key);
-      if (typeof value === "boolean") {
-        markInfo[key] = value;
-      }
+    for (const key of ["Marked", "UserProperties", "Suspects"]) {
+      const val = obj.get(key);
+      markInfo.set(key, typeof val === "boolean" ? val : false);
     }
-
     return markInfo;
   }
 
@@ -926,13 +919,9 @@ class Catalog {
         case "A":
         case "a":
           const LIMIT = 26; // Use only the characters A-Z, or a-z.
-          const A_UPPER_CASE = 0x41,
-            A_LOWER_CASE = 0x61;
-
-          const baseCharCode = style === "a" ? A_LOWER_CASE : A_UPPER_CASE;
           const letterIndex = currentIndex - 1;
           const character = String.fromCharCode(
-            baseCharCode + (letterIndex % LIMIT)
+            style.charCodeAt(0) + (letterIndex % LIMIT)
           );
           currentLabel = character.repeat(Math.floor(letterIndex / LIMIT) + 1);
           break;

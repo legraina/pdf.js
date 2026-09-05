@@ -131,7 +131,7 @@ class Page {
     };
   }
 
-  #createPartialEvaluator(handler, pageIndex = this.pageIndex) {
+  _createPartialEvaluator(handler, pageIndex = this.pageIndex) {
     // The pageIndex is used to identify the page some objects (like images)
     // belong to.
 
@@ -148,10 +148,6 @@ class Page {
       systemFontCache: this.systemFontCache,
       options: this.evaluatorOptions,
     });
-  }
-
-  createAnnotationEvaluator(handler) {
-    return this.#createPartialEvaluator(handler);
   }
 
   #getInheritableProperty(key, getArray = false) {
@@ -327,44 +323,45 @@ class Page {
   async #replaceIdByRef(annotations, deletedAnnotations, existingAnnotations) {
     const promises = [];
     for (const annotation of annotations) {
-      if (annotation.id) {
-        const ref = Ref.fromString(annotation.id);
-        if (!ref) {
-          warn(`A non-linked annotation cannot be modified: ${annotation.id}`);
-          continue;
-        }
-        if (annotation.deleted) {
-          deletedAnnotations.put(ref, ref);
-          if (annotation.popupRef) {
-            const popupRef = Ref.fromString(annotation.popupRef);
-            if (popupRef) {
-              deletedAnnotations.put(popupRef, popupRef);
-            }
-          }
-          continue;
-        }
-        if (annotation.popup?.deleted) {
+      if (!annotation.id) {
+        continue;
+      }
+      const ref = Ref.fromString(annotation.id);
+      if (!ref) {
+        warn(`A non-linked annotation cannot be modified: ${annotation.id}`);
+        continue;
+      }
+      if (annotation.deleted) {
+        deletedAnnotations.put(ref);
+        if (annotation.popupRef) {
           const popupRef = Ref.fromString(annotation.popupRef);
           if (popupRef) {
-            deletedAnnotations.put(popupRef, popupRef);
+            deletedAnnotations.put(popupRef);
           }
         }
-        existingAnnotations?.put(ref);
-        annotation.ref = ref;
-        promises.push(
-          this.xref.fetchAsync(ref).then(
-            obj => {
-              if (obj instanceof Dict) {
-                annotation.oldAnnotation = obj.clone();
-              }
-            },
-            () => {
-              warn(`Cannot fetch \`oldAnnotation\` for: ${ref}.`);
-            }
-          )
-        );
-        delete annotation.id;
+        continue;
       }
+      if (annotation.popup?.deleted) {
+        const popupRef = Ref.fromString(annotation.popupRef);
+        if (popupRef) {
+          deletedAnnotations.put(popupRef);
+        }
+      }
+      existingAnnotations?.put(ref);
+      annotation.ref = ref;
+      promises.push(
+        this.xref.fetchAsync(ref).then(
+          obj => {
+            if (obj instanceof Dict) {
+              annotation.oldAnnotation = obj.clone();
+            }
+          },
+          () => {
+            warn(`Cannot fetch \`oldAnnotation\` for: ${ref}.`);
+          }
+        )
+      );
+      delete annotation.id;
     }
     await Promise.all(promises);
   }
@@ -373,9 +370,9 @@ class Page {
     if (this.xfaFactory) {
       throw new Error("XFA: Cannot save new annotations.");
     }
-    const partialEvaluator = this.#createPartialEvaluator(handler);
+    const partialEvaluator = this._createPartialEvaluator(handler);
 
-    const deletedAnnotations = new RefMap();
+    const deletedAnnotations = new RefSet();
     const existingAnnotations = new RefSet();
     await this.#replaceIdByRef(
       annotations,
@@ -417,7 +414,7 @@ class Page {
   }
 
   async save(handler, task, annotationStorage, changes) {
-    const partialEvaluator = this.#createPartialEvaluator(handler);
+    const partialEvaluator = this._createPartialEvaluator(handler);
 
     // Fetch the page's annotations and save the content
     // in case of interactive form fields.
@@ -481,7 +478,7 @@ class Page {
     const contentStreamPromise = this.getContentStream();
     const resourcesPromise = this.loadResources(RESOURCES_KEYS_OPERATOR_LIST);
 
-    const partialEvaluator = this.#createPartialEvaluator(handler, pageIndex);
+    const partialEvaluator = this._createPartialEvaluator(handler, pageIndex);
 
     const newAnnotsByPage = !this.xfaFactory
       ? getNewAnnotationsMap(annotationStorage)
@@ -689,7 +686,7 @@ class Page {
       RESOURCES_KEYS_TEXT_CONTENT
     );
 
-    const partialEvaluator = this.#createPartialEvaluator(handler);
+    const partialEvaluator = this._createPartialEvaluator(handler);
 
     return partialEvaluator.getTextContent({
       stream: contentStream,
@@ -760,7 +757,7 @@ class Page {
       }
 
       if (annotation.hasTextContent && isVisible) {
-        partialEvaluator ??= this.#createPartialEvaluator(handler);
+        partialEvaluator ??= this._createPartialEvaluator(handler);
 
         textContentPromises.push(
           annotation
@@ -923,7 +920,7 @@ class Page {
             }
             annotation.data.pageIndex = pageIndex;
             if (annotation.hasTextContent && annotation.viewable) {
-              partialEvaluator ??= this.#createPartialEvaluator(handler);
+              partialEvaluator ??= this._createPartialEvaluator(handler);
 
               await annotation.extractTextContent(partialEvaluator, task, [
                 -Infinity,
@@ -1601,16 +1598,12 @@ class PDFDocument {
             default:
               if (value instanceof Name) {
                 customValue = value;
+                break;
               }
-              break;
+              warn(`Bad value, for custom key "${key}", in Info: ${value}.`);
+              continue;
           }
-
-          if (customValue === undefined) {
-            warn(`Bad value, for custom key "${key}", in Info: ${value}.`);
-            continue;
-          }
-          docInfo.Custom ??= Object.create(null);
-          docInfo.Custom[key] = customValue;
+          (docInfo.Custom ??= new Map()).set(key, customValue);
           continue;
       }
       warn(`Bad value, for key "${key}", in Info: ${value}.`);
@@ -2256,28 +2249,22 @@ class PDFDocument {
   }
 
   get hasJSActions() {
-    const promise = this.pdfManager.ensureDoc("_parseHasJSActions");
-    return shadow(this, "hasJSActions", promise);
-  }
-
-  /**
-   * @private
-   */
-  async _parseHasJSActions() {
-    const [catalogJsActions, fieldObjects] = await Promise.all([
+    const promise = Promise.all([
       this.pdfManager.ensureCatalog("jsActions"),
       this.pdfManager.ensureDoc("fieldObjects"),
-    ]);
+    ]).then(([catalogJsActions, fieldObjects]) => {
+      if (catalogJsActions) {
+        return true;
+      }
+      if (fieldObjects?.allFields) {
+        return fieldObjects.allFields
+          .values()
+          .some(fieldObj => fieldObj.some(obj => obj.actions !== null));
+      }
+      return false;
+    });
 
-    if (catalogJsActions) {
-      return true;
-    }
-    if (fieldObjects?.allFields) {
-      return fieldObjects.allFields
-        .values()
-        .some(fieldObj => fieldObj.some(obj => obj.actions !== null));
-    }
-    return false;
+    return shadow(this, "hasJSActions", promise);
   }
 
   get calculationOrderIds() {
