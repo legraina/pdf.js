@@ -552,7 +552,7 @@ class WorkerMessageHandler {
           }
           await Promise.all(pagePromises);
           const annotations = await Promise.all(annotationPromises);
-          return annotations.filter(a => !!a);
+          return annotations.filter(Boolean);
         } finally {
           if (task) {
             finishWorkerTask(task);
