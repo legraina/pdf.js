@@ -765,7 +765,8 @@ class Annotation {
 
       annotationGlobals.structTreeRoot.addAnnotationIdToPage(
         params.pageRef,
-        structParent
+        structParent,
+        this.ref
       );
     }
 
