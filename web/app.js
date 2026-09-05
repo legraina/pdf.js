@@ -32,6 +32,8 @@ import {
   isValidRotation,
   isValidScrollMode,
   isValidSpreadMode,
+  MAX_SCALE,
+  MIN_SCALE,
   normalizeWheelEventDirection,
   parseQueryString,
   ProgressBar,
@@ -50,6 +52,7 @@ import {
   InvalidPDFException,
   isDataScheme,
   isPdfFile,
+  MathClamp,
   OutputScale,
   PDFWorker,
   ResponseException,
@@ -3179,21 +3182,27 @@ appConfig: null,
     if (factor === 1) {
       return 1;
     }
-    // If the direction changed, reset the accumulated factor.
-    if ((this[prop] > 1 && factor < 1) || (this[prop] < 1 && factor > 1)) {
-      this[prop] = 1;
-    }
-
+    // Carry scale-rounding error into the next factor.
+    // #367 modified by ngx-extended-pdf-viewer
+    // Upstream clamps to the built-in MIN_SCALE/MAX_SCALE; honour the
+    // viewer's configurable limits instead, otherwise a maxZoom above
+    // MAX_SCALE (or a minZoom below MIN_SCALE) is capped here before
+    // pdf_viewer.js ever sees it.
+    const target = MathClamp(
+      previousScale * factor * this[prop],
+      this.pdfViewer?.minZoom ?? MIN_SCALE,
+      this.pdfViewer?.maxZoom ?? MAX_SCALE
+    );
+    // #367 end of modification by ngx-extended-pdf-viewer
     // #3069 modified by ngx-extended-pdf-viewer
-    // Use 0.1% precision (1000) during pinch for smoother increments.
-    // The scale snaps to whole percentages when the gesture ends.
-    const newFactor =
-      Math.floor(previousScale * factor * this[prop] * 1000) /
-      (1000 * previousScale);
+    // Use 0.1% precision for smoother pinch increments; upstream rounds to
+    // whole percent here. The scale snaps to whole percentages when the
+    // gesture ends (see #setScale in pdf_viewer.js).
+    const newScale = Math.floor(target * 1000) / 1000;
     // #3069 end of modification by ngx-extended-pdf-viewer
-    this[prop] = factor / newFactor;
+    this[prop] = target / newScale;
 
-    return newFactor;
+    return newScale / previousScale;
   },
 
   /**

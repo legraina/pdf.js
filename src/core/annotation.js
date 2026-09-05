@@ -2613,6 +2613,21 @@ class WidgetAnnotation extends Annotation {
     );
     const alignment = this.data.textAlignment;
 
+    let { ascent: fontAscent, descent: fontDescent } = font;
+    if (
+      isNaN(fontAscent) ||
+      isNaN(fontDescent) ||
+      (!fontAscent && !fontDescent)
+    ) {
+      fontAscent = LINE_FACTOR - LINE_DESCENT_FACTOR;
+      fontDescent = LINE_DESCENT_FACTOR;
+    } else {
+      fontDescent = Math.abs(fontDescent);
+    }
+    const vShift =
+      (totalHeight - (fontAscent + fontDescent) * fontSize) / 2 +
+      fontDescent * fontSize;
+
     if (this.data.multiLine) {
       return this._getMultilineAppearance(
         defaultAppearance,
@@ -2637,14 +2652,14 @@ class WidgetAnnotation extends Annotation {
         encodedLines[0],
         fontSize,
         totalWidth,
-        totalHeight,
+        vShift,
         alignment,
         bidi(lines[0]).dir === "rtl",
         annotationStorage
       );
     }
 
-    const bottomPadding = defaultVPadding + descent;
+    const bottomPadding = vShift;
     if (alignment === 0 || alignment > 2) {
       // Left alignment: nothing to do
       return (
@@ -2998,7 +3013,7 @@ class TextWidgetAnnotation extends WidgetAnnotation {
     text,
     fontSize,
     width,
-    height,
+    vShift,
     alignment,
     isRTL,
     annotationStorage
@@ -3035,12 +3050,6 @@ class TextWidgetAnnotation extends WidgetAnnotation {
       previousWidth = glyphWidth;
     }
     const renderedComb = buf.join(" ");
-
-    // Vertically center the glyphs within the field: comb fields are mostly
-    // filled with uppercase letters and/or digits, hence we use the cap height
-    // (with a fallback on the ascent or the font size) to center them.
-    const vShift =
-      (height - (font.capHeight || font.ascent || 1) * fontSize) / 2;
 
     return (
       `/Tx BMC q ${colors}BT ` +
