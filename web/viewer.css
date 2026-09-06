@@ -529,10 +529,12 @@ body {
 /* modified by ngx-extended-pdf-viewer - undo/redo toolbar buttons */
 #undoButton::before {
   mask-image: var(--toolbarButton-undo-icon);
+  transform: scaleX(var(--dir-factor));
 }
 
 #redoButton::before {
   mask-image: var(--toolbarButton-redo-icon);
+  transform: scaleX(var(--dir-factor));
 }
 /* end of modification by ngx-extended-pdf-viewer */
 

@@ -3597,10 +3597,9 @@ class PDFViewer {
    * Undo the last annotation editing command.
    */
   undo() {
-    if (!this.#annotationEditorUIManager) {
-      throw new Error(`The AnnotationEditor is not enabled.`);
-    }
-    if (!this.pdfDocument) {
+    // This method is reachable through the global `undo` event bus event, so
+    // it must be a safe no-op when the editor isn't enabled.
+    if (!this.#annotationEditorUIManager || !this.pdfDocument) {
       return;
     }
     this.#annotationEditorUIManager.undo();
@@ -3610,10 +3609,9 @@ class PDFViewer {
    * Redo the last undone annotation editing command.
    */
   redo() {
-    if (!this.#annotationEditorUIManager) {
-      throw new Error(`The AnnotationEditor is not enabled.`);
-    }
-    if (!this.pdfDocument) {
+    // This method is reachable through the global `redo` event bus event, so
+    // it must be a safe no-op when the editor isn't enabled.
+    if (!this.#annotationEditorUIManager || !this.pdfDocument) {
       return;
     }
     this.#annotationEditorUIManager.redo();
