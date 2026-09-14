@@ -31,11 +31,7 @@ import {
 import { noContextMenu, stopEvent } from "../display_utils.js";
 import { AnnotationEditor } from "./editor.js";
 import { ColorPicker } from "./color_picker.js";
-import {
-  getPathsBBox,
-  sweepCircleHitsRect,
-  sweepCircleOverPaths,
-} from "./eraser_utils.js";
+import { getPathsBBox, sweepCircleOverPaths } from "./eraser_utils.js";
 
 /**
  * Basic draw editor in order to generate an Highlight annotation.
@@ -944,64 +940,37 @@ class HighlightEditor extends AnnotationEditor {
 
   /** @inheritdoc */
   startErase({ width: layerW, height: layerH }) {
-    const { rotation } = this.parent.viewport;
-    if (this.#isFreeHighlight) {
-      if (!this.#highlightOutlines) {
-        return null;
-      }
-      // The eraser must react as soon as it touches the visible highlight.
-      const strokeRadius = (this.#thickness / 2) * this.parentScale;
-      // The outline points are fractions of the layer in the frame the
-      // highlight was created in: bring them into the current frame.
-      const angle = (rotation - this.rotation + 360) % 360;
-      const points = this.#highlightOutlines.getLayerPoints();
-      const path = new Float32Array(points.length);
-      for (let i = 0, ii = points.length; i < ii; i += 2) {
-        const [x, y] = HighlightEditor.#rotateNormalizedPoint(
-          points[i],
-          points[i + 1],
-          angle
-        );
-        path[i] = x * layerW;
-        path[i + 1] = y * layerH;
-      }
-      this.#eraseSession = {
-        isFree: true,
-        paths: [path],
-        strokeRadius,
-        layerW,
-        layerH,
-        modified: false,
-        dirty: false,
-      };
-      return getPathsBBox([path], strokeRadius);
-    }
-
-    if (!this.#boxes?.length) {
+    // Only drawings can be erased. A text (selection) highlight is left
+    // untouched: returning null keeps the eraser from tracking it.
+    if (!this.#isFreeHighlight || !this.#highlightOutlines) {
       return null;
     }
-    // A text highlight is always drawn horizontally: its boxes are in the
-    // unrotated page frame.
-    const bbox = [Infinity, Infinity, -Infinity, -Infinity];
-    const rects = this.#boxes.map(({ x, y, width, height }) => {
-      const [bx, by, bw, bh] = HighlightEditor.#rotateBbox(
-        [x, y, width, height],
-        rotation
+    const { rotation } = this.parent.viewport;
+    // The eraser must react as soon as it touches the visible highlight.
+    const strokeRadius = (this.#thickness / 2) * this.parentScale;
+    // The outline points are fractions of the layer in the frame the
+    // highlight was created in: bring them into the current frame.
+    const angle = (rotation - this.rotation + 360) % 360;
+    const points = this.#highlightOutlines.getLayerPoints();
+    const path = new Float32Array(points.length);
+    for (let i = 0, ii = points.length; i < ii; i += 2) {
+      const [x, y] = HighlightEditor.#rotateNormalizedPoint(
+        points[i],
+        points[i + 1],
+        angle
       );
-      const rect = [
-        bx * layerW,
-        by * layerH,
-        (bx + bw) * layerW,
-        (by + bh) * layerH,
-      ];
-      bbox[0] = Math.min(bbox[0], rect[0]);
-      bbox[1] = Math.min(bbox[1], rect[1]);
-      bbox[2] = Math.max(bbox[2], rect[2]);
-      bbox[3] = Math.max(bbox[3], rect[3]);
-      return rect;
-    });
-    this.#eraseSession = { isFree: false, rects, hit: false, dirty: false };
-    return bbox;
+      path[i] = x * layerW;
+      path[i + 1] = y * layerH;
+    }
+    this.#eraseSession = {
+      paths: [path],
+      strokeRadius,
+      layerW,
+      layerH,
+      modified: false,
+      dirty: false,
+    };
+    return getPathsBBox([path], strokeRadius);
   }
 
   /** @inheritdoc */
@@ -1010,33 +979,17 @@ class HighlightEditor extends AnnotationEditor {
     if (!session) {
       return;
     }
-    if (session.isFree) {
-      const { paths, modified } = sweepCircleOverPaths(
-        session.paths,
-        x,
-        y,
-        radius + session.strokeRadius,
-        prevX,
-        prevY
-      );
-      if (modified) {
-        session.paths = paths;
-        session.modified = true;
-        session.dirty = true;
-      }
-      return;
-    }
-    if (session.hit) {
-      return;
-    }
-    // A text highlight can't be partially erased: it's removed as soon as
-    // the eraser touches one of its boxes.
-    if (
-      session.rects.some(rect =>
-        sweepCircleHitsRect(x, y, radius, prevX, prevY, rect)
-      )
-    ) {
-      session.hit = true;
+    const { paths, modified } = sweepCircleOverPaths(
+      session.paths,
+      x,
+      y,
+      radius + session.strokeRadius,
+      prevX,
+      prevY
+    );
+    if (modified) {
+      session.paths = paths;
+      session.modified = true;
       session.dirty = true;
     }
   }
@@ -1048,21 +1001,12 @@ class HighlightEditor extends AnnotationEditor {
       return;
     }
     session.dirty = false;
-    const { drawLayer } = this.parent;
-    if (!session.isFree) {
-      // Preview of the removal.
-      drawLayer.updateProperties(this.#id, { rootClass: { hidden: true } });
-      drawLayer.updateProperties(this.#outlineId, {
-        rootClass: { hidden: true },
-      });
-      return;
-    }
     // Preview: draw the remaining pieces in the current frame over the whole
     // layer. The final outlines are only built once the session ends.
     const d = this.#buildEraseOutliners(session)
       .map(outliner => outliner.toSVGPath())
       .join(" ");
-    drawLayer.updateProperties(this.#id, {
+    this.parent.drawLayer.updateProperties(this.#id, {
       bbox: [0, 0, 1, 1],
       root: { "data-main-rotation": 0 },
       path: { d },
@@ -1073,13 +1017,7 @@ class HighlightEditor extends AnnotationEditor {
   endErase() {
     const session = this.#eraseSession;
     this.#eraseSession = null;
-    if (!session) {
-      return {};
-    }
-    if (!session.isFree) {
-      return session.hit ? this.#getEraseRemovalCommands() : {};
-    }
-    if (!session.modified) {
+    if (!session?.modified) {
       return {};
     }
 

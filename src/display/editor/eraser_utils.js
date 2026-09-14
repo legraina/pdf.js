@@ -159,31 +159,6 @@ function sweepCircleOverPaths(paths, x, y, r, prevX = x, prevY = y) {
 }
 
 /**
- * @param {number} cx
- * @param {number} cy
- * @param {number} r
- * @param {Array<number>} rect - [left, top, right, bottom].
- * @returns {boolean} Whether the circle touches the rectangle.
- */
-function circleHitsRect(cx, cy, r, [left, top, right, bottom]) {
-  const dx = cx - Math.max(left, Math.min(cx, right));
-  const dy = cy - Math.max(top, Math.min(cy, bottom));
-  return dx * dx + dy * dy <= r * r;
-}
-
-/**
- * @returns {boolean} Whether the circle of radius r moving from
- *   (prevX, prevY) to (x, y) touches the rectangle [left, top, right, bottom].
- */
-function sweepCircleHitsRect(x, y, r, prevX, prevY, rect) {
-  let hit = false;
-  forEachSweepSample(x, y, r, prevX, prevY, (cx, cy) => {
-    hit ||= circleHitsRect(cx, cy, r, rect);
-  });
-  return hit;
-}
-
-/**
  * @param {Array<Float32Array>} paths
  * @param {number} [margin] - Added on each side.
  * @returns {Array<number>|null} The bounding box [left, top, right, bottom]
@@ -208,10 +183,4 @@ function getPathsBBox(paths, margin = 0) {
   return [minX - margin, minY - margin, maxX + margin, maxY + margin];
 }
 
-export {
-  circleHitsRect,
-  clipPathsWithCircle,
-  getPathsBBox,
-  sweepCircleHitsRect,
-  sweepCircleOverPaths,
-};
+export { clipPathsWithCircle, getPathsBBox, sweepCircleOverPaths };
