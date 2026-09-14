@@ -60,9 +60,7 @@ class InkDrawingOptions extends DrawingOptions {
  * Basic draw editor in order to generate an Ink annotation.
  */
 class InkEditor extends DrawingEditor {
-  #points = null;
-
-  #erased = false;
+  #eraseSession = null;
 
   static _type = "ink";
 
@@ -381,71 +379,99 @@ class InkEditor extends DrawingEditor {
     return null;
   }
 
-  /**
-   * Erase everything in a radius of (x,y) position.
-   * @param {number} x
-   * @param {number} y
-   * @param {number} radius
-   */
-  erase(x, y, radius) {
-    this.#points ||= this.serializeDraw(false).points;
-
-    const radius2 = radius * radius;
-    const newPaths = [];
-    let modified = false;
-
-    for (const path of this.#points) {
-      if (path.length === 0) {
+  /** @inheritdoc */
+  startErase(layerRect) {
+    const { points } = this.serializeDraw(/* isForCopying = */ false);
+    const transform = this.#getLayerTransform(layerRect);
+    const paths = [];
+    const bbox = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const path of points) {
+      const len = path.length;
+      if (len < 2) {
         continue;
       }
-      let newPath = [];
-      for (let i = 0; i < path.length; i += 2) {
-        const [lx, ly] = this.#pagePointToLayer(path[i], path[i + 1]);
-        const dx = lx - x;
-        const dy = ly - y;
-        const dist = dx * dx + dy * dy;
-        if (dist >= radius2) {
-          newPath.push(path[i], path[i + 1]);
-        } else {
-          modified = true;
-          if (newPath.length >= 4) {
-            newPaths.push(new Float32Array(newPath));
-          }
-          newPath = [];
-        }
+      const layerPath = new Float32Array(len);
+      for (let i = 0; i < len; i += 2) {
+        const [x, y] = transform.toLayer(path[i], path[i + 1]);
+        layerPath[i] = x;
+        layerPath[i + 1] = y;
+        bbox[0] = Math.min(bbox[0], x);
+        bbox[1] = Math.min(bbox[1], y);
+        bbox[2] = Math.max(bbox[2], x);
+        bbox[3] = Math.max(bbox[3], y);
       }
-      if (newPath.length >= 4) {
-        newPaths.push(new Float32Array(newPath));
-      }
+      paths.push(layerPath);
+    }
+    if (paths.length === 0) {
+      return null;
     }
 
-    if (modified) {
-      this.#points = newPaths;
-      this.#erased = true;
-      // remove svg path if no points are left
-      if (newPaths.length === 0) {
-        this.parent.drawLayer.updateProperties(this._drawId, {
-          path: { d: "" },
-        });
-      } else {
-        const tempOutline = this.#deserializePoints();
-        this.parent.drawLayer.updateProperties(this._drawId, {
-          path: { d: tempOutline.toSVGPath() },
-        });
-      }
+    // The eraser must react as soon as it touches the visible stroke, not only
+    // when it reaches the centerline.
+    const strokeRadius =
+      (this._drawingOptions["stroke-width"] * this.parentScale) / 2;
+    this.#eraseSession = {
+      paths,
+      transform,
+      strokeRadius,
+      modified: false,
+      dirty: false,
+    };
+    return [
+      bbox[0] - strokeRadius,
+      bbox[1] - strokeRadius,
+      bbox[2] + strokeRadius,
+      bbox[3] + strokeRadius,
+    ];
+  }
+
+  /** @inheritdoc */
+  erase(x, y, radius, prevX = x, prevY = y) {
+    const session = this.#eraseSession;
+    if (!session) {
+      return;
+    }
+    const r = radius + session.strokeRadius;
+    // Sample the eraser circle along the swept segment: a fast move must not
+    // jump over a stroke lying between two pointer events. With a step of r/2
+    // the sampled circles leave a gap of at most 3% of r.
+    const dx = x - prevX;
+    const dy = y - prevY;
+    const step = Math.max(r / 2, 1);
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / step));
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps;
+      this.#clipCircle(prevX + dx * t, prevY + dy * t, r);
     }
   }
 
+  /** @inheritdoc */
+  renderErase() {
+    const session = this.#eraseSession;
+    if (!session?.dirty || !this.parent) {
+      return;
+    }
+    session.dirty = false;
+    this.parent.drawLayer.updateProperties(this._drawId, {
+      path: {
+        d:
+          session.paths.length === 0
+            ? ""
+            : this.#buildOutline(session).toSVGPath(),
+      },
+    });
+  }
+
+  /** @inheritdoc */
   endErase() {
-    // if nothing has been erased
-    if (!this.#erased) {
+    const session = this.#eraseSession;
+    this.#eraseSession = null;
+    if (!session?.modified) {
       return {};
     }
 
-    // reset erased flag
-    this.#erased = false;
     const oldOutline = this._drawOutlines;
-    const drawingOptions = { ...this._drawingOptions };
+    const drawingOptions = this._drawingOptions;
     const undo = () => {
       this._addOutlines({
         drawOutlines: oldOutline,
@@ -454,14 +480,13 @@ class InkEditor extends DrawingEditor {
       });
     };
 
-    if (this.#points.length === 0) {
+    if (session.paths.length === 0) {
       // The whole drawing has been erased: the editor is removed, so the
       // generic undo above (which redraws through this.parent) cannot work.
       // Re-attaching the editor is enough: #drawOutlines was never
       // overwritten in this branch, hence rebuild() restores the previous
       // drawing.
       const parent = this.parent;
-      this.#points = null;
       this.remove();
       return {
         cmd: () => this.remove(),
@@ -471,7 +496,7 @@ class InkEditor extends DrawingEditor {
       };
     }
 
-    const newOutlines = this.#deserializePoints();
+    const newOutlines = this.#buildOutline(session);
     const cmd = () =>
       this._addOutlines({
         drawOutlines: newOutlines,
@@ -480,69 +505,194 @@ class InkEditor extends DrawingEditor {
       });
     cmd();
 
-    this.#points = null;
-
     return { cmd, undo };
   }
 
-  #deserializePoints() {
+  /**
+   * Remove from the current erase session everything lying inside the circle
+   * of center (cx, cy) and radius r (layer pixels). Segments crossing the
+   * circle are cut at the intersection points, so the remaining paths end
+   * exactly at the eraser boundary and not at the nearest sampled point.
+   */
+  #clipCircle(cx, cy, r) {
+    const session = this.#eraseSession;
+    const r2 = r * r;
+    const newPaths = [];
+    let modified = false;
+
+    for (const path of session.paths) {
+      const len = path.length;
+      if (len === 2) {
+        // A single dot.
+        const dx = path[0] - cx;
+        const dy = path[1] - cy;
+        if (dx * dx + dy * dy <= r2) {
+          modified = true;
+        } else {
+          newPaths.push(path);
+        }
+        continue;
+      }
+
+      let current = null;
+      const flush = () => {
+        if (current && current.length >= 4) {
+          newPaths.push(new Float32Array(current));
+        }
+        current = null;
+      };
+
+      let ax = path[0];
+      let ay = path[1];
+      for (let i = 2; i < len; i += 2) {
+        const bx = path[i];
+        const by = path[i + 1];
+        const inside = InkEditor.#segmentInCircle(ax, ay, bx, by, cx, cy, r2);
+        if (!inside) {
+          current ??= [ax, ay];
+          current.push(bx, by);
+        } else {
+          modified = true;
+          const [t0, t1] = inside;
+          if (t0 > 0) {
+            // The segment enters the circle: keep the part before it.
+            current ??= [ax, ay];
+            current.push(ax + (bx - ax) * t0, ay + (by - ay) * t0);
+          }
+          flush();
+          if (t1 < 1) {
+            // The segment leaves the circle: start a new path from there.
+            current = [ax + (bx - ax) * t1, ay + (by - ay) * t1, bx, by];
+          }
+        }
+        ax = bx;
+        ay = by;
+      }
+      flush();
+    }
+
+    if (modified) {
+      session.paths = newPaths;
+      session.modified = true;
+      session.dirty = true;
+    }
+  }
+
+  /**
+   * @returns {Array<number>|null} the parameter interval [t0, t1] of the
+   *   segment AB lying inside the circle (t0 may be < 0 and t1 > 1 when an
+   *   endpoint is inside), or null when the segment doesn't touch the circle.
+   */
+  static #segmentInCircle(ax, ay, bx, by, cx, cy, r2) {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const fx = ax - cx;
+    const fy = ay - cy;
+    const a = dx * dx + dy * dy;
+    const c = fx * fx + fy * fy - r2;
+    if (a === 0) {
+      // Degenerate segment.
+      return c <= 0 ? [0, 1] : null;
+    }
+    const b = 2 * (fx * dx + fy * dy);
+    const disc = b * b - 4 * a * c;
+    if (disc < 0) {
+      return null;
+    }
+    const sq = Math.sqrt(disc);
+    const t0 = (-b - sq) / (2 * a);
+    const t1 = (-b + sq) / (2 * a);
+    if (t1 < 0 || t0 > 1) {
+      return null;
+    }
+    return [t0, t1];
+  }
+
+  #buildOutline({ paths, transform }) {
     const {
       viewport: {
         rawDims: { pageWidth, pageHeight, pageX, pageY },
       },
     } = this.parent;
 
-    const thickness = this._drawingOptions["stroke-width"];
-    const rotation = this.rotation;
+    const points = paths.map(path => {
+      const pagePath = new Float32Array(path.length);
+      for (let i = 0, ii = path.length; i < ii; i += 2) {
+        const [x, y] = transform.toPage(path[i], path[i + 1]);
+        pagePath[i] = x;
+        pagePath[i + 1] = y;
+      }
+      return pagePath;
+    });
 
-    const newOutline = InkEditor.deserializeDraw(
+    return InkEditor.deserializeDraw(
       pageX,
       pageY,
       pageWidth,
       pageHeight,
       InkEditor._INNER_MARGIN,
       {
-        paths: { points: this.#points },
-        rotation,
-        thickness,
+        paths: { points },
+        rotation: this.rotation,
+        thickness: this._drawingOptions["stroke-width"],
       }
     );
-
-    return newOutline;
   }
 
-  #pagePointToLayer(px, py) {
+  /**
+   * Build the (exact, invertible) mapping between the PDF page coordinates
+   * used by the serialized ink points and the layer pixels used by the eraser.
+   */
+  #getLayerTransform({ width: layerW, height: layerH }) {
     const [pageX, pageY] = this.pageTranslation;
     const [pageW, pageH] = this.pageDimensions;
-    const { width: layerW, height: layerH } =
-      this.parent.div.getBoundingClientRect();
 
-    const nx = (px - pageX) / pageW;
-    const ny = (py - pageY) / pageH;
-
-    let rx, ry;
     switch ((this.rotation || 0) % 360) {
       case 90:
-        rx = ny;
-        ry = 1 - nx;
-        break;
+        return {
+          toLayer: (px, py) => [
+            ((py - pageY) / pageH) * layerW,
+            ((px - pageX) / pageW) * layerH,
+          ],
+          toPage: (lx, ly) => [
+            pageX + (ly / layerH) * pageW,
+            pageY + (lx / layerW) * pageH,
+          ],
+        };
       case 180:
-        rx = 1 - nx;
-        ry = 1 - ny;
-        break;
+        return {
+          toLayer: (px, py) => [
+            (1 - (px - pageX) / pageW) * layerW,
+            ((py - pageY) / pageH) * layerH,
+          ],
+          toPage: (lx, ly) => [
+            pageX + (1 - lx / layerW) * pageW,
+            pageY + (ly / layerH) * pageH,
+          ],
+        };
       case 270:
-        rx = 1 - ny;
-        ry = nx;
-        break;
+        return {
+          toLayer: (px, py) => [
+            (1 - (py - pageY) / pageH) * layerW,
+            (1 - (px - pageX) / pageW) * layerH,
+          ],
+          toPage: (lx, ly) => [
+            pageX + (1 - ly / layerH) * pageW,
+            pageY + (1 - lx / layerW) * pageH,
+          ],
+        };
       default:
-        rx = nx;
-        ry = ny;
-        break;
+        return {
+          toLayer: (px, py) => [
+            ((px - pageX) / pageW) * layerW,
+            (1 - (py - pageY) / pageH) * layerH,
+          ],
+          toPage: (lx, ly) => [
+            pageX + (lx / layerW) * pageW,
+            pageY + (1 - ly / layerH) * pageH,
+          ],
+        };
     }
-
-    const lx = rx * layerW;
-    const ly = (1 - ry) * layerH;
-    return [lx, ly];
   }
 }
 

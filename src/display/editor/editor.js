@@ -565,16 +565,42 @@ class AnnotationEditor {
   }
 
   /**
-   * Erase everything in a radius of (x,y) position.
-   * @param {number} x
-   * @param {number} y
-   * @param {number} radius
+   * Start an erase session: snapshot the editor geometry once so that the
+   * hit tests done on every pointer move stay cheap.
+   * @param {DOMRect} layerRect - Bounding rect of the annotation editor layer.
+   * @returns {Array<number>|null} The editor bbox in layer pixels
+   *   ([left, top, right, bottom]), or null when nothing can be erased.
    */
-  erase(x, y, radius) {
+  startErase(layerRect) {
     unreachable("Not implemented");
   }
 
-  /** call once the erasing operation is done */
+  /**
+   * Erase everything swept by the eraser circle moving from (prevX, prevY)
+   * to (x, y). All values are in layer pixels.
+   * @param {number} x
+   * @param {number} y
+   * @param {number} radius
+   * @param {number} [prevX]
+   * @param {number} [prevY]
+   */
+  erase(x, y, radius, prevX = x, prevY = y) {
+    unreachable("Not implemented");
+  }
+
+  /**
+   * Update the rendering after one or more erase calls.
+   * Called at most once per animation frame.
+   */
+  renderErase() {
+    unreachable("Not implemented");
+  }
+
+  /**
+   * Call once the erasing session is done.
+   * @returns {{cmd?: Function, undo?: Function}} The commands to (re)do and
+   *   undo the erasing, or an empty object when nothing was erased.
+   */
   endErase() {
     unreachable("Not implemented");
   }

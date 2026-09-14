@@ -6,11 +6,30 @@ import { noContextMenu, stopEvent } from "../display_utils.js";
 import { AnnotationEditor } from "./editor.js";
 
 class EraserEditor extends AnnotationEditor {
-  static #currentCursorAC = null;
+  // One EraserEditor is created per visible page, so these controllers must
+  // be per instance: a shared static one would abort the listeners of
+  // whichever page was enabled last.
+  #cursorAC = null;
 
-  static #currentEraserAC = null;
+  #eraserAC = null;
 
-  #erasableEditors = [];
+  #cursor = null;
+
+  // Thickness the cursor element was last sized for.
+  #cursorThickness = 0;
+
+  #isErasing = false;
+
+  // Erase session state (only meaningful while #isErasing is true).
+  #layerRect = null;
+
+  #sessionEditors = [];
+
+  #pendingSamples = [];
+
+  #lastSample = null;
+
+  #rafId = null;
 
   static _defaultThickness = 20;
 
@@ -19,10 +38,6 @@ class EraserEditor extends AnnotationEditor {
   static _type = "eraser";
 
   static _editorType = AnnotationEditorType.ERASER;
-
-  #cursor = null;
-
-  #isErasing = false;
 
   constructor(params) {
     super({ ...params, name: "eraserEditor" });
@@ -84,7 +99,6 @@ class EraserEditor extends AnnotationEditor {
 
     const div = super.render();
     this.fixAndSetPosition();
-    this.#erasableEditors = this.#getErasableEditors();
     this.enableEditing();
     return div;
   }
@@ -106,10 +120,7 @@ class EraserEditor extends AnnotationEditor {
     super.enableEditing();
     this.div?.classList.toggle("disabled", false);
 
-    if (this.#cursor) {
-      this.#cursor.remove();
-      this.#cursor = null;
-    }
+    this.#abortCursor();
 
     if (this.div) {
       this.div.style.pointerEvents = "auto";
@@ -117,12 +128,12 @@ class EraserEditor extends AnnotationEditor {
 
       this.#cursor = document.createElement("div");
       this.#cursor.className = "eraserCursor";
+      this.#cursorThickness = 0;
       this.#updateCursor();
       this.#cursor.style.display = "none";
-      this.#cursor.style.pointerEvents = "none";
       this.div.append(this.#cursor);
 
-      const ac = (EraserEditor.#currentCursorAC = new AbortController());
+      const ac = (this.#cursorAC = new AbortController());
       const signal = this.parent.combinedSignal(ac);
 
       this.div.addEventListener("pointermove", this.#moveCursor.bind(this), {
@@ -149,16 +160,17 @@ class EraserEditor extends AnnotationEditor {
     super.disableEditing();
     this.div?.classList.toggle("disabled", true);
 
-    this.#abortEraseSession();
+    this.#cancelEraseSession();
     this.#abortCursor();
   }
 
   /** @inheritdoc */
   remove() {
-    super.remove();
-
-    this.#abortEraseSession();
+    // Commit a running session while this.parent is still available.
+    this.#cancelEraseSession();
     this.#abortCursor();
+
+    super.remove();
   }
 
   updateThickness(thickness) {
@@ -198,16 +210,32 @@ class EraserEditor extends AnnotationEditor {
       return;
     }
 
-    this.#moveCursor(event);
-
     const { pointerId, pointerType, target } = event;
     const currentPointers = this._uiManager.currentPointers;
     if (currentPointers.isInitializedAndDifferentPointerType(pointerType)) {
+      this.#moveCursor(event);
       return;
     }
+
+    // A session that never reached pointerup would leave its listeners
+    // installed; abort it before starting a new one.
+    this.#abortEraseSession();
     currentPointers.setPointer(pointerType, pointerId);
 
-    const ac = (EraserEditor.#currentEraserAC = new AbortController());
+    // Everything is constant during a session (the page doesn't move while
+    // erasing), so read the layout once and let the editors snapshot their
+    // geometry once instead of doing it on every pointer move.
+    this.#layerRect = this.parent.div.getBoundingClientRect();
+    this.#moveCursor(event);
+    this.#sessionEditors = [];
+    for (const editor of this.#getErasableEditors()) {
+      const bbox = editor.startErase(this.#layerRect);
+      if (bbox) {
+        this.#sessionEditors.push({ editor, bbox });
+      }
+    }
+
+    const ac = (this.#eraserAC = new AbortController());
     const signal = this.parent.combinedSignal(ac);
 
     window.addEventListener(
@@ -264,7 +292,7 @@ class EraserEditor extends AnnotationEditor {
     );
 
     this.#isErasing = true;
-    this.#erase(event.clientX, event.clientY);
+    this.#queueSample(event.clientX, event.clientY);
     stopEvent(event);
   }
 
@@ -287,7 +315,7 @@ class EraserEditor extends AnnotationEditor {
       return;
     }
 
-    this.#erase(event.clientX, event.clientY);
+    this.#queueSample(event.clientX, event.clientY);
 
     // We track the timestamp to know if the touchmove event is used to draw.
     currentPointers.setTimeStamp(event.timeStamp);
@@ -297,21 +325,85 @@ class EraserEditor extends AnnotationEditor {
 
   #endErase(event) {
     if (event) {
-      this.#erase(event.clientX, event.clientY);
+      this.#queueSample(event.clientX, event.clientY);
     }
+    this.#flushSamples();
     this.#commit();
     this.#abortEraseSession();
+  }
+
+  /**
+   * Queue a pointer position. Pointer events can fire several times per
+   * frame; the hit tests and the (expensive) path rebuilds are done once per
+   * frame in #flushSamples.
+   */
+  #queueSample(clientX, clientY) {
+    this.#pendingSamples.push(
+      clientX - this.#layerRect.left,
+      clientY - this.#layerRect.top
+    );
+    this.#rafId ??= window.requestAnimationFrame(() => {
+      this.#rafId = null;
+      this.#flushSamples();
+    });
+  }
+
+  #flushSamples() {
+    if (this.#rafId !== null) {
+      window.cancelAnimationFrame(this.#rafId);
+      this.#rafId = null;
+    }
+    const samples = this.#pendingSamples;
+    if (samples.length === 0) {
+      return;
+    }
+    this.#pendingSamples = [];
+
+    const radius = EraserEditor._thickness / 2;
+    let [prevX, prevY] = this.#lastSample ?? [samples[0], samples[1]];
+    for (let i = 0, ii = samples.length; i < ii; i += 2) {
+      const x = samples[i];
+      const y = samples[i + 1];
+      // Bounding box of the area swept by the eraser between the two samples.
+      const minX = Math.min(x, prevX) - radius;
+      const minY = Math.min(y, prevY) - radius;
+      const maxX = Math.max(x, prevX) + radius;
+      const maxY = Math.max(y, prevY) + radius;
+      for (const { editor, bbox } of this.#sessionEditors) {
+        if (
+          maxX < bbox[0] ||
+          minX > bbox[2] ||
+          maxY < bbox[1] ||
+          minY > bbox[3]
+        ) {
+          continue;
+        }
+        editor.erase(x, y, radius, prevX, prevY);
+      }
+      prevX = x;
+      prevY = y;
+    }
+    this.#lastSample = [prevX, prevY];
+
+    for (const { editor } of this.#sessionEditors) {
+      editor.renderErase();
+    }
   }
 
   #commit() {
     const cmds = [],
       undos = [];
-    for (const editor of this.#erasableEditors) {
+    for (const { editor } of this.#sessionEditors) {
       const { cmd, undo } = editor.endErase();
       if (cmd && undo) {
         cmds.push(cmd);
         undos.push(undo);
       }
+    }
+
+    if (cmds.length === 0) {
+      // Nothing was erased: don't add a no-op step to the undo stack.
+      return;
     }
 
     this.parent.addCommands({
@@ -322,11 +414,31 @@ class EraserEditor extends AnnotationEditor {
     });
   }
 
-  #abortEraseSession() {
-    if (EraserEditor.#currentEraserAC) {
-      EraserEditor.#currentEraserAC.abort();
-      EraserEditor.#currentEraserAC = null;
+  /**
+   * End a running session (committing what has been erased so far) or just
+   * drop the session state when none is running.
+   */
+  #cancelEraseSession() {
+    if (this.#isErasing && this.parent) {
+      this.#endErase(null);
+    } else {
+      this.#abortEraseSession();
     }
+  }
+
+  #abortEraseSession() {
+    this.#eraserAC?.abort();
+    this.#eraserAC = null;
+
+    if (this.#rafId !== null) {
+      window.cancelAnimationFrame(this.#rafId);
+      this.#rafId = null;
+    }
+    this.#pendingSamples = [];
+    this.#lastSample = null;
+    this.#layerRect = null;
+    this.#sessionEditors = [];
+
     const currentPointers = this._uiManager.currentPointers;
     currentPointers.clearPointerIds();
     currentPointers.clearTimeStamp();
@@ -334,10 +446,8 @@ class EraserEditor extends AnnotationEditor {
   }
 
   #abortCursor() {
-    if (EraserEditor.#currentCursorAC) {
-      EraserEditor.#currentCursorAC.abort();
-      EraserEditor.#currentCursorAC = null;
-    }
+    this.#cursorAC?.abort();
+    this.#cursorAC = null;
 
     if (this.#cursor) {
       this.#cursor.remove();
@@ -351,14 +461,18 @@ class EraserEditor extends AnnotationEditor {
   }
 
   #updateCursor() {
-    if (this.#cursor) {
-      this.#cursor.style.width = `${EraserEditor._thickness}px`;
-      this.#cursor.style.height = `${EraserEditor._thickness}px`;
+    // The thickness slider only updates the static default (the eraser is
+    // never selected), so the cursor size is checked on every move: this
+    // writes to the DOM only when the thickness actually changed.
+    const thickness = EraserEditor._thickness;
+    if (this.#cursor && this.#cursorThickness !== thickness) {
+      this.#cursorThickness = thickness;
+      this.#cursor.style.width = `${thickness}px`;
+      this.#cursor.style.height = `${thickness}px`;
     }
   }
 
   #displayCursor(event) {
-    this.#updateCursor();
     this.#moveCursor(event);
   }
 
@@ -376,12 +490,14 @@ class EraserEditor extends AnnotationEditor {
       return;
     }
 
-    const rect = this.parent.div.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
+    this.#updateCursor();
+    const rect = this.#layerRect ?? this.parent.div.getBoundingClientRect();
+    const radius = EraserEditor._thickness / 2;
+    const x = event.clientX - rect.left - radius;
+    const y = event.clientY - rect.top - radius;
 
-    this.#cursor.style.left = `${x - EraserEditor._thickness / 2}px`;
-    this.#cursor.style.top = `${y - EraserEditor._thickness / 2}px`;
+    // A transform doesn't trigger a layout, unlike left/top.
+    this.#cursor.style.transform = `translate(${x}px, ${y}px)`;
 
     this.#showCursor();
   }
@@ -398,44 +514,6 @@ class EraserEditor extends AnnotationEditor {
     const editors =
       Array.from(this._uiManager.getEditors(this.pageIndex)) || [];
     return editors.filter(ed => ed.erasable && ed?.parent?.div && ed?.div);
-  }
-
-  #erase(clientX, clientY) {
-    const layerRect = this.parent.div.getBoundingClientRect();
-    const x = clientX - layerRect.left;
-    const y = clientY - layerRect.top;
-    const radius = EraserEditor._thickness / 2;
-
-    for (const editor of this.#erasableEditors) {
-      if (!editor?.parent?.div || !editor?.div) {
-        continue;
-      }
-
-      const pdfRect = editor.getRect(0, 0, editor.rotation);
-      const [, pageHeight] = editor.pageDimensions;
-      const [pageX, pageY] = editor.pageTranslation;
-      const [cx, cy, cw, ch] = editor.getRectInCurrentCoords(
-        pdfRect,
-        pageHeight
-      );
-      const scale = editor.parentScale;
-      const left = (cx - pageX) * scale;
-      const top = (cy + pageY) * scale;
-      const right = left + cw * scale;
-      const bottom = top + ch * scale;
-      if (this.#hitBBox(x, y, radius, [left, top, right, bottom])) {
-        editor.erase(x, y, radius);
-      }
-    }
-  }
-
-  #hitBBox(x, y, r, rect) {
-    const [left, top, right, bottom] = rect;
-    const cx = Math.max(left, Math.min(x, right));
-    const cy = Math.max(top, Math.min(y, bottom));
-    const dx = x - cx;
-    const dy = y - cy;
-    return dx * dx + dy * dy <= r * r;
   }
 }
 
