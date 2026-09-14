@@ -118,7 +118,6 @@ class HighlightEditor extends AnnotationEditor {
     this.#text = params.text || "";
     this._isDraggable = false;
     this.defaultL10nId = "pdfjs-editor-highlight-editor";
-    this._erasable = true;
     this.#isErasePiece = !!params.isErasePiece;
 
     if (params.highlightId > -1) {
@@ -939,10 +938,15 @@ class HighlightEditor extends AnnotationEditor {
   }
 
   /** @inheritdoc */
+  get erasable() {
+    // Only drawings can be erased: a free (drawn) highlight is, a text
+    // (selection) highlight isn't. The eraser skips non-erasable editors.
+    return this.#isFreeHighlight;
+  }
+
+  /** @inheritdoc */
   startErase({ width: layerW, height: layerH }) {
-    // Only drawings can be erased. A text (selection) highlight is left
-    // untouched: returning null keeps the eraser from tracking it.
-    if (!this.#isFreeHighlight || !this.#highlightOutlines) {
+    if (!this.#highlightOutlines) {
       return null;
     }
     const { rotation } = this.parent.viewport;
