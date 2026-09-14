@@ -31,6 +31,11 @@ import {
 import { noContextMenu, stopEvent } from "../display_utils.js";
 import { AnnotationEditor } from "./editor.js";
 import { ColorPicker } from "./color_picker.js";
+import {
+  getPathsBBox,
+  sweepCircleHitsRect,
+  sweepCircleOverPaths,
+} from "./eraser_utils.js";
 
 /**
  * Basic draw editor in order to generate an Highlight annotation.
@@ -59,6 +64,11 @@ class HighlightEditor extends AnnotationEditor {
   #id = null;
 
   #isFreeHighlight = false;
+
+  // True for a piece of a free highlight split by the eraser.
+  #isErasePiece = false;
+
+  #eraseSession = null;
 
   #firstPoint = null;
 
@@ -112,6 +122,8 @@ class HighlightEditor extends AnnotationEditor {
     this.#text = params.text || "";
     this._isDraggable = false;
     this.defaultL10nId = "pdfjs-editor-highlight-editor";
+    this._erasable = true;
+    this.#isErasePiece = !!params.isErasePiece;
 
     if (params.highlightId > -1) {
       this.#isFreeHighlight = true;
@@ -492,6 +504,12 @@ class HighlightEditor extends AnnotationEditor {
 
   /** @inheritdoc */
   onceAdded(focus) {
+    if (this.#isErasePiece) {
+      // The eraser step owns the undo of the pieces it creates, and a new
+      // piece must not steal the focus: that would select it and leave the
+      // eraser mode.
+      return;
+    }
     if (!this.annotationElementId) {
       this.parent.addUndoableEditor(this);
     }
@@ -620,6 +638,22 @@ class HighlightEditor extends AnnotationEditor {
         return [y, 1 - x - width, height, width];
     }
     return [x, y, width, height];
+  }
+
+  /**
+   * Rotate a point given in normalized layer coordinates, consistently with
+   * #rotateBbox.
+   */
+  static #rotateNormalizedPoint(x, y, angle) {
+    switch (angle) {
+      case 90:
+        return [1 - y, x];
+      case 180:
+        return [1 - x, 1 - y];
+      case 270:
+        return [y, 1 - x];
+    }
+    return [x, y];
   }
 
   /** @inheritdoc */
@@ -906,6 +940,282 @@ class HighlightEditor extends AnnotationEditor {
     this._freeHighlightId = -1;
     this._freeHighlight = null;
     this._freeHighlightClipId = "";
+  }
+
+  /** @inheritdoc */
+  startErase({ width: layerW, height: layerH }) {
+    const { rotation } = this.parent.viewport;
+    if (this.#isFreeHighlight) {
+      if (!this.#highlightOutlines) {
+        return null;
+      }
+      // The eraser must react as soon as it touches the visible highlight.
+      const strokeRadius = (this.#thickness / 2) * this.parentScale;
+      // The outline points are fractions of the layer in the frame the
+      // highlight was created in: bring them into the current frame.
+      const angle = (rotation - this.rotation + 360) % 360;
+      const points = this.#highlightOutlines.getLayerPoints();
+      const path = new Float32Array(points.length);
+      for (let i = 0, ii = points.length; i < ii; i += 2) {
+        const [x, y] = HighlightEditor.#rotateNormalizedPoint(
+          points[i],
+          points[i + 1],
+          angle
+        );
+        path[i] = x * layerW;
+        path[i + 1] = y * layerH;
+      }
+      this.#eraseSession = {
+        isFree: true,
+        paths: [path],
+        strokeRadius,
+        layerW,
+        layerH,
+        modified: false,
+        dirty: false,
+      };
+      return getPathsBBox([path], strokeRadius);
+    }
+
+    if (!this.#boxes?.length) {
+      return null;
+    }
+    // A text highlight is always drawn horizontally: its boxes are in the
+    // unrotated page frame.
+    const bbox = [Infinity, Infinity, -Infinity, -Infinity];
+    const rects = this.#boxes.map(({ x, y, width, height }) => {
+      const [bx, by, bw, bh] = HighlightEditor.#rotateBbox(
+        [x, y, width, height],
+        rotation
+      );
+      const rect = [
+        bx * layerW,
+        by * layerH,
+        (bx + bw) * layerW,
+        (by + bh) * layerH,
+      ];
+      bbox[0] = Math.min(bbox[0], rect[0]);
+      bbox[1] = Math.min(bbox[1], rect[1]);
+      bbox[2] = Math.max(bbox[2], rect[2]);
+      bbox[3] = Math.max(bbox[3], rect[3]);
+      return rect;
+    });
+    this.#eraseSession = { isFree: false, rects, hit: false, dirty: false };
+    return bbox;
+  }
+
+  /** @inheritdoc */
+  erase(x, y, radius, prevX = x, prevY = y) {
+    const session = this.#eraseSession;
+    if (!session) {
+      return;
+    }
+    if (session.isFree) {
+      const { paths, modified } = sweepCircleOverPaths(
+        session.paths,
+        x,
+        y,
+        radius + session.strokeRadius,
+        prevX,
+        prevY
+      );
+      if (modified) {
+        session.paths = paths;
+        session.modified = true;
+        session.dirty = true;
+      }
+      return;
+    }
+    if (session.hit) {
+      return;
+    }
+    // A text highlight can't be partially erased: it's removed as soon as
+    // the eraser touches one of its boxes.
+    if (
+      session.rects.some(rect =>
+        sweepCircleHitsRect(x, y, radius, prevX, prevY, rect)
+      )
+    ) {
+      session.hit = true;
+      session.dirty = true;
+    }
+  }
+
+  /** @inheritdoc */
+  renderErase() {
+    const session = this.#eraseSession;
+    if (!session?.dirty || !this.parent) {
+      return;
+    }
+    session.dirty = false;
+    const { drawLayer } = this.parent;
+    if (!session.isFree) {
+      // Preview of the removal.
+      drawLayer.updateProperties(this.#id, { rootClass: { hidden: true } });
+      drawLayer.updateProperties(this.#outlineId, {
+        rootClass: { hidden: true },
+      });
+      return;
+    }
+    // Preview: draw the remaining pieces in the current frame over the whole
+    // layer. The final outlines are only built once the session ends.
+    const d = this.#buildEraseOutliners(session)
+      .map(outliner => outliner.toSVGPath())
+      .join(" ");
+    drawLayer.updateProperties(this.#id, {
+      bbox: [0, 0, 1, 1],
+      root: { "data-main-rotation": 0 },
+      path: { d },
+    });
+  }
+
+  /** @inheritdoc */
+  endErase() {
+    const session = this.#eraseSession;
+    this.#eraseSession = null;
+    if (!session) {
+      return {};
+    }
+    if (!session.isFree) {
+      return session.hit ? this.#getEraseRemovalCommands() : {};
+    }
+    if (!session.modified) {
+      return {};
+    }
+
+    const outliners = this.#buildEraseOutliners(session);
+    if (outliners.length === 0) {
+      return this.#getEraseRemovalCommands();
+    }
+
+    // The remaining pieces are rebuilt in the current frame (as if they had
+    // just been drawn): this editor keeps the first one, the others become
+    // new editors.
+    const { rotation } = this.parent.viewport;
+    const savedOutlines = this.#highlightOutlines;
+    const savedRotation = this.rotation;
+    const [first, ...rest] = outliners;
+    const firstOutlines = first.getOutlines();
+    let pieces = null;
+
+    const setOutlines = (highlightOutlines, editorRotation) => {
+      this.rotation = editorRotation;
+      this.#createFreeOutlines({ highlightOutlines });
+      if (this.parent) {
+        this.rotate(this.parent.viewport.rotation);
+      }
+      this.fixAndSetPosition();
+      this.setDims();
+    };
+    const cmd = () => {
+      setOutlines(firstOutlines, rotation);
+      if (pieces) {
+        for (const piece of pieces) {
+          this._uiManager.rebuild(piece);
+          if (piece.parent) {
+            piece.rotate(piece.parent.viewport.rotation);
+          }
+        }
+      } else {
+        pieces = rest.map(outliner => this.#createErasePiece(outliner));
+      }
+    };
+    const undo = () => {
+      for (const piece of pieces) {
+        piece.remove();
+      }
+      setOutlines(savedOutlines, savedRotation);
+    };
+    cmd();
+
+    return { cmd, undo };
+  }
+
+  /**
+   * Build a fresh outliner, in the current frame, for each remaining piece
+   * of the erase session (same recipe as startHighlighting).
+   * Pieces shorter than the outliner's minimum distance vanish.
+   */
+  #buildEraseOutliners({ paths, layerW, layerH }) {
+    const outliners = [];
+    for (const path of paths) {
+      const outliner = new FreeHighlightOutliner(
+        { x: path[0], y: path[1] },
+        [0, 0, layerW, layerH],
+        this.parent.scale,
+        this.#thickness / 2,
+        this._uiManager.direction === "ltr",
+        /* innerMargin = */ 0.001
+      );
+      for (let i = 2, ii = path.length; i < ii; i += 2) {
+        outliner.add({ x: path[i], y: path[i + 1] });
+      }
+      if (!outliner.isEmpty()) {
+        outliners.push(outliner);
+      }
+    }
+    return outliners;
+  }
+
+  /**
+   * Create a new free highlight editor for a piece split off by the eraser.
+   */
+  #createErasePiece(outliner) {
+    const parent = this.parent;
+    const { id, clipPathId } = parent.drawLayer.draw(
+      {
+        bbox: [0, 0, 1, 1],
+        root: {
+          viewBox: "0 0 1 1",
+          fill: this.color,
+          "fill-opacity": this.opacity,
+        },
+        rootClass: {
+          highlight: true,
+          free: true,
+        },
+        path: {
+          d: outliner.toSVGPath(),
+        },
+      },
+      /* isPathUpdatable = */ true,
+      /* hasClip = */ true
+    );
+    const piece = new HighlightEditor({
+      parent,
+      id: this._uiManager.getId(),
+      uiManager: this._uiManager,
+      eventBus: this.eventBus,
+      x: 0,
+      y: 0,
+      isCentered: false,
+      highlightId: id,
+      highlightOutlines: outliner.getOutlines(),
+      clipPathId,
+      color: this.color,
+      opacity: this.opacity,
+      thickness: this.#thickness,
+      methodOfCreation: "eraser",
+      isErasePiece: true,
+    });
+    parent.add(piece);
+    return piece;
+  }
+
+  /**
+   * The whole highlight has been erased: remove the editor now and return
+   * the commands to redo/undo the removal.
+   */
+  #getEraseRemovalCommands() {
+    const parent = this.parent;
+    this.remove();
+    return {
+      cmd: () => this.remove(),
+      undo: () => {
+        parent.addOrRebuild(this);
+        this.rotate(this.parent.viewport.rotation);
+      },
+    };
   }
 
   /** @inheritdoc */

@@ -21,6 +21,7 @@ import {
 } from "../../shared/util.js";
 import { DrawingEditor, DrawingOptions } from "./draw.js";
 import { InkDrawOutline, InkDrawOutliner } from "./drawers/inkdraw.js";
+import { getPathsBBox, sweepCircleOverPaths } from "./eraser_utils.js";
 import { AnnotationEditor } from "./editor.js";
 import { BasicColorPicker } from "./color_picker.js";
 import { InkAnnotationElement } from "../annotation_layer.js";
@@ -384,7 +385,6 @@ class InkEditor extends DrawingEditor {
     const { points } = this.serializeDraw(/* isForCopying = */ false);
     const transform = this.#getLayerTransform(layerRect);
     const paths = [];
-    const bbox = [Infinity, Infinity, -Infinity, -Infinity];
     for (const path of points) {
       const len = path.length;
       if (len < 2) {
@@ -395,10 +395,6 @@ class InkEditor extends DrawingEditor {
         const [x, y] = transform.toLayer(path[i], path[i + 1]);
         layerPath[i] = x;
         layerPath[i + 1] = y;
-        bbox[0] = Math.min(bbox[0], x);
-        bbox[1] = Math.min(bbox[1], y);
-        bbox[2] = Math.max(bbox[2], x);
-        bbox[3] = Math.max(bbox[3], y);
       }
       paths.push(layerPath);
     }
@@ -417,12 +413,7 @@ class InkEditor extends DrawingEditor {
       modified: false,
       dirty: false,
     };
-    return [
-      bbox[0] - strokeRadius,
-      bbox[1] - strokeRadius,
-      bbox[2] + strokeRadius,
-      bbox[3] + strokeRadius,
-    ];
+    return getPathsBBox(paths, strokeRadius);
   }
 
   /** @inheritdoc */
@@ -431,17 +422,18 @@ class InkEditor extends DrawingEditor {
     if (!session) {
       return;
     }
-    const r = radius + session.strokeRadius;
-    // Sample the eraser circle along the swept segment: a fast move must not
-    // jump over a stroke lying between two pointer events. With a step of r/2
-    // the sampled circles leave a gap of at most 3% of r.
-    const dx = x - prevX;
-    const dy = y - prevY;
-    const step = Math.max(r / 2, 1);
-    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / step));
-    for (let s = 1; s <= steps; s++) {
-      const t = s / steps;
-      this.#clipCircle(prevX + dx * t, prevY + dy * t, r);
+    const { paths, modified } = sweepCircleOverPaths(
+      session.paths,
+      x,
+      y,
+      radius + session.strokeRadius,
+      prevX,
+      prevY
+    );
+    if (modified) {
+      session.paths = paths;
+      session.modified = true;
+      session.dirty = true;
     }
   }
 
@@ -506,106 +498,6 @@ class InkEditor extends DrawingEditor {
     cmd();
 
     return { cmd, undo };
-  }
-
-  /**
-   * Remove from the current erase session everything lying inside the circle
-   * of center (cx, cy) and radius r (layer pixels). Segments crossing the
-   * circle are cut at the intersection points, so the remaining paths end
-   * exactly at the eraser boundary and not at the nearest sampled point.
-   */
-  #clipCircle(cx, cy, r) {
-    const session = this.#eraseSession;
-    const r2 = r * r;
-    const newPaths = [];
-    let modified = false;
-
-    for (const path of session.paths) {
-      const len = path.length;
-      if (len === 2) {
-        // A single dot.
-        const dx = path[0] - cx;
-        const dy = path[1] - cy;
-        if (dx * dx + dy * dy <= r2) {
-          modified = true;
-        } else {
-          newPaths.push(path);
-        }
-        continue;
-      }
-
-      let current = null;
-      const flush = () => {
-        if (current && current.length >= 4) {
-          newPaths.push(new Float32Array(current));
-        }
-        current = null;
-      };
-
-      let ax = path[0];
-      let ay = path[1];
-      for (let i = 2; i < len; i += 2) {
-        const bx = path[i];
-        const by = path[i + 1];
-        const inside = InkEditor.#segmentInCircle(ax, ay, bx, by, cx, cy, r2);
-        if (!inside) {
-          current ??= [ax, ay];
-          current.push(bx, by);
-        } else {
-          modified = true;
-          const [t0, t1] = inside;
-          if (t0 > 0) {
-            // The segment enters the circle: keep the part before it.
-            current ??= [ax, ay];
-            current.push(ax + (bx - ax) * t0, ay + (by - ay) * t0);
-          }
-          flush();
-          if (t1 < 1) {
-            // The segment leaves the circle: start a new path from there.
-            current = [ax + (bx - ax) * t1, ay + (by - ay) * t1, bx, by];
-          }
-        }
-        ax = bx;
-        ay = by;
-      }
-      flush();
-    }
-
-    if (modified) {
-      session.paths = newPaths;
-      session.modified = true;
-      session.dirty = true;
-    }
-  }
-
-  /**
-   * @returns {Array<number>|null} the parameter interval [t0, t1] of the
-   *   segment AB lying inside the circle (t0 may be < 0 and t1 > 1 when an
-   *   endpoint is inside), or null when the segment doesn't touch the circle.
-   */
-  static #segmentInCircle(ax, ay, bx, by, cx, cy, r2) {
-    const dx = bx - ax;
-    const dy = by - ay;
-    const fx = ax - cx;
-    const fy = ay - cy;
-    const a = dx * dx + dy * dy;
-    const c = fx * fx + fy * fy - r2;
-    if (a === 0) {
-      // Degenerate segment.
-      return c <= 0 ? [0, 1] : null;
-    }
-    const b = 2 * (fx * dx + fy * dy);
-    const disc = b * b - 4 * a * c;
-    if (disc < 0) {
-      return null;
-    }
-    const sq = Math.sqrt(disc);
-    const t0 = (-b - sq) / (2 * a);
-    const t1 = (-b + sq) / (2 * a);
-    if (t1 < 0 || t0 > 1) {
-      return null;
-    }
-    return [t0, t1];
   }
 
   #buildOutline({ paths, transform }) {
