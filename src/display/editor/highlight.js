@@ -488,12 +488,16 @@ class HighlightEditor extends DrawingEditor {
       return;
     }
     session.dirty = false;
-    // Preview: redraw the fill with the remaining pieces. The focus outline is
-    // left as-is during the drag and rebuilt once the session ends.
-    const d = this.#buildPieceOutlines(session)
-      .map(outline => outline.toSVGPath())
+    // Preview: paint the remaining pieces the way a live drawing does - the
+    // (unfinalized) outliner emits coordinates over the whole layer, so the box
+    // is the full layer and the view rotation is already baked into the points
+    // (hence data-main-rotation 0). Finalizing to a tight box waits for commit.
+    const d = this.#buildEraseOutliners(session)
+      .map(outliner => outliner.toSVGPath())
       .join(" ");
     this.parent.drawLayer.updateProperties(this._drawId, {
+      bbox: [0, 0, 1, 1],
+      root: { "data-main-rotation": 0 },
       path: { d },
     });
   }
@@ -510,7 +514,9 @@ class HighlightEditor extends DrawingEditor {
     // disjoint pieces. Rebuild each as a fresh highlight editor and drop the
     // original; undo restores the original and removes the pieces.
     const parent = this.parent;
-    const outlines = this.#buildPieceOutlines(session);
+    const outlines = this.#buildEraseOutliners(session).map(outliner =>
+      this.#finalizeEraseOutline(outliner)
+    );
     let pieces = null;
 
     const cmd = () => {
@@ -541,16 +547,19 @@ class HighlightEditor extends DrawingEditor {
    * Rebuild one FreeHighlightOutline per remaining piece of the erase session,
    * in the current view frame. Pieces too short to form a stroke are dropped.
    */
-  #buildPieceOutlines({ paths, layerW, layerH }) {
-    // Rebuild each remaining piece in the current-view layer frame, exactly
-    // like a freshly drawn highlight (see createDrawerInstance). This keeps the
-    // pieces correctly placed and oriented whatever the page rotation, because
-    // their rotation then matches the view and no re-rotation is needed.
+  /**
+   * Build one (unfinalized) FreeHighlightOutliner per remaining piece of the
+   * erase session, in the current-view layer frame - the same recipe a live
+   * highlight drawing uses (see createDrawerInstance). Pieces too short to form
+   * a stroke are dropped.
+   * @returns {Array<FreeHighlightOutliner>}
+   */
+  #buildEraseOutliners({ paths, layerW, layerH }) {
     const box = [0, 0, layerW, layerH];
     const halfThickness = this._drawingOptions.thickness / 2;
     const isLTR = this._uiManager.direction === "ltr";
     const scale = this.parentScale;
-    const outlines = [];
+    const outliners = [];
     for (const path of paths) {
       if (path.length < 4) {
         continue;
@@ -567,14 +576,18 @@ class HighlightEditor extends DrawingEditor {
       for (let i = 2, ii = path.length; i < ii; i += 2) {
         outliner.add(path[i], path[i + 1]);
       }
-      if (outliner.isEmpty()) {
-        continue;
+      if (!outliner.isEmpty()) {
+        outliners.push(outliner);
       }
-      const outline = outliner.getOutlines();
-      outline.buildFocusOutline(this._drawingOptions.thickness);
-      outlines.push(outline);
     }
-    return outlines;
+    return outliners;
+  }
+
+  /** Finalize an erase outliner into a highlight outline (with focus). */
+  #finalizeEraseOutline(outliner) {
+    const outline = outliner.getOutlines();
+    outline.buildFocusOutline(this._drawingOptions.thickness);
+    return outline;
   }
 
   /**
