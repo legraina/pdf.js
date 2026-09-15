@@ -5703,7 +5703,7 @@ class Text extends ContentObject {
     if (typeof this[$content] === "string") {
       return this[$content]
         .split(/[\u2029\u2028\n]/)
-        .filter(line => !!line)
+        .filter(Boolean)
         .join("\n");
     }
     return this[$content][$text]();
@@ -6073,10 +6073,9 @@ class Value extends XFAObject {
 
   [$text]() {
     if (this.exData) {
-      if (typeof this.exData[$content] === "string") {
-        return this.exData[$content].trim();
-      }
-      return this.exData[$content][$text]().trim();
+      return typeof this.exData[$content] === "string"
+        ? this.exData[$content].trim()
+        : this.exData[$content][$text]().trim();
     }
     for (const name of Object.getOwnPropertyNames(this)) {
       if (name === "image") {

@@ -19,80 +19,83 @@ import {
   shadow,
   Util,
 } from "../../shared/util.js";
-import { bindEvents, KeyboardManager } from "./tools.js";
+import { DrawingEditor, DrawingOptions } from "./draw.js";
 import {
+  FreeHighlightDrawer,
   FreeHighlightOutliner,
-  HighlightOutliner,
+  HighlightOutline,
 } from "./drawers/highlight.js";
 import {
   HighlightAnnotationElement,
   InkAnnotationElement,
 } from "../annotation_layer.js";
-import { noContextMenu, stopEvent } from "../display_utils.js";
 import { AnnotationEditor } from "./editor.js";
 import { ColorPicker } from "./color_picker.js";
-import { getPathsBBox, sweepCircleOverPaths } from "./eraser_utils.js";
+import { KeyboardManager } from "./tools.js";
+import { stopEvent } from "../display_utils.js";
+import {
+  getPathsBBox,
+  makeLayerTransform,
+  sweepCircleOverPaths,
+} from "./eraser_utils.js";
+
+class HighlightDrawingOptions extends DrawingOptions {
+  constructor(properties = null) {
+    super();
+    super.updateProperties(properties);
+  }
+
+  /** @inheritdoc */
+  updateSVGProperty(name, value) {
+    if (name !== "thickness") {
+      // Thickness changes free-highlight geometry, not SVG attributes.
+      super.updateSVGProperty(name, value);
+    }
+  }
+
+  /** @inheritdoc */
+  clone() {
+    const clone = new HighlightDrawingOptions();
+    clone.updateAll(this);
+    return clone;
+  }
+}
 
 /**
- * Basic draw editor in order to generate an Highlight annotation.
+ * Editor for text-selection and freehand highlights.
+ * Their geometry comes from separate outline implementations.
  */
-class HighlightEditor extends AnnotationEditor {
+class HighlightEditor extends DrawingEditor {
   #anchorNode = null;
 
   #anchorOffset = 0;
-
-  #boxes;
-
-  #clipPathId = null;
-
-  #colorPicker = null;
-
-  #focusOutlines = null;
 
   #focusNode = null;
 
   #focusOffset = 0;
 
-  #highlightDiv = null;
+  #methodOfCreation = "";
 
-  #highlightOutlines = null;
+  #text = "";
 
-  #id = null;
-
-  #isFreeHighlight = false;
+  #eraseSession = null;
 
   // True for a piece of a free highlight split by the eraser.
   #isErasePiece = false;
 
-  #eraseSession = null;
+  // Suppress the focus (hence mode switch) when the eraser restores this
+  // editor through undo/redo.
+  #suppressFocusOnce = false;
 
-  #firstPoint = null;
+  static _DEFAULT_OPACITY = 1;
 
-  #lastPoint = null;
+  static _DEFAULT_THICKNESS = 12;
 
-  #outlineId = null;
-
-  #text = "";
-
-  #thickness;
-
-  #methodOfCreation = "";
-
-  static _defaultColor = null;
-
-  static _defaultOpacity = 1;
-
-  static _defaultThickness = 12;
+  static _defaultDrawingOptions = null;
 
   static _type = "highlight";
 
   static _editorType = AnnotationEditorType.HIGHLIGHT;
-
-  static _freeHighlightId = -1;
-
-  static _freeHighlight = null;
-
-  static _freeHighlightClipId = "";
 
   static get _keyboardManager() {
     const proto = HighlightEditor.prototype;
@@ -110,29 +113,18 @@ class HighlightEditor extends AnnotationEditor {
 
   constructor(params) {
     super({ ...params, name: "highlightEditor" });
-    this.color = params.color || HighlightEditor._defaultColor;
-    this.#thickness = params.thickness || HighlightEditor._defaultThickness;
-    this.opacity = params.opacity || HighlightEditor._defaultOpacity;
-    this.#boxes = params.boxes || null;
-    this.#methodOfCreation = params.methodOfCreation || "";
+    this.#anchorNode = params.anchorNode || null;
+    this.#anchorOffset = params.anchorOffset || 0;
+    this.#focusNode = params.focusNode || null;
+    this.#focusOffset = params.focusOffset || 0;
+    this.#methodOfCreation =
+      params.methodOfCreation ||
+      (this._drawOutlines?.isFree ? "main_toolbar" : "");
     this.#text = params.text || "";
     this._isDraggable = false;
     this.defaultL10nId = "pdfjs-editor-highlight-editor";
     this.#isErasePiece = !!params.isErasePiece;
-
-    if (params.highlightId > -1) {
-      this.#isFreeHighlight = true;
-      this.#createFreeOutlines(params);
-      this.#addToDrawLayer();
-    } else if (this.#boxes) {
-      this.#anchorNode = params.anchorNode;
-      this.#anchorOffset = params.anchorOffset;
-      this.#focusNode = params.focusNode;
-      this.#focusOffset = params.focusOffset;
-      this.#createOutlines();
-      this.#addToDrawLayer();
-      this.rotate(this.rotation);
-    }
+    this.rotate();
     // #2256 / 2556 modified by ngx-extended-pdf-viewer
     // #3076 modified by ngx-extended-pdf-viewer - added id field
     // #3240 modified by ngx-extended-pdf-viewer - while annotations are being
@@ -143,19 +135,125 @@ class HighlightEditor extends AnnotationEditor {
       this._dispatchAddedEvent();
     }
     // #2256 / 2556 end of modification by ngx-extended-pdf-viewer
+  }
 
-    if (!this.annotationElementId) {
-      this._uiManager.a11yAlert(AnnotationEditor._l10nAlert.highlight);
+  /** @inheritdoc */
+  static initialize(l10n, uiManager) {
+    AnnotationEditor.initialize(l10n, uiManager);
+    // Preserve user-selected defaults across initialize calls.
+    this._defaultDrawingOptions ||= new HighlightDrawingOptions({
+      fill: uiManager.highlightColors?.values().next().value || "#fff066",
+      "fill-opacity": HighlightEditor._DEFAULT_OPACITY,
+      thickness: HighlightEditor._DEFAULT_THICKNESS,
+    });
+  }
+
+  /** @inheritdoc */
+  static getDefaultDrawingOptions(options) {
+    const clone = this._defaultDrawingOptions.clone();
+    clone.updateProperties(options);
+    return clone;
+  }
+
+  /** @inheritdoc */
+  static get typesMap() {
+    return shadow(
+      this,
+      "typesMap",
+      new Map([
+        [AnnotationEditorParamsType.HIGHLIGHT_COLOR, "fill"],
+        [AnnotationEditorParamsType.HIGHLIGHT_THICKNESS, "thickness"],
+      ])
+    );
+  }
+
+  /** @inheritdoc */
+  static get isDrawer() {
+    // Free highlights start on the text layer.
+    return false;
+  }
+
+  /** @inheritdoc */
+  static get _hasClipPath() {
+    // Clip the interactive div to the highlight shape.
+    return true;
+  }
+
+  /** @inheritdoc */
+  static get _hasDrawClass() {
+    return false;
+  }
+
+  /** @inheritdoc */
+  _addOutlines(params) {
+    const { boxes, drawOutlines } = params;
+    if (!boxes && !drawOutlines) {
+      return;
     }
+    this._drawingOptions ||=
+      params.drawingOptions || HighlightEditor.getDefaultDrawingOptions();
+    if (boxes) {
+      params = {
+        ...params,
+        drawOutlines: HighlightOutline.build(
+          boxes,
+          this._uiManager.direction === "ltr"
+        ),
+      };
+    }
+    super._addOutlines(params);
+  }
+
+  get colorType() {
+    return AnnotationEditorParamsType.HIGHLIGHT_COLOR;
+  }
+
+  get color() {
+    return this._drawingOptions.fill;
+  }
+
+  get opacity() {
+    return this._drawingOptions["fill-opacity"];
+  }
+
+  /** @inheritdoc */
+  get _opacityName() {
+    // Preserve imported opacity, which the UI doesn't expose.
+    return "fill-opacity";
+  }
+
+  /** @inheritdoc */
+  get _drawRotation() {
+    // Text uses page coordinates; freehand uses editor rotation.
+    return this._drawOutlines?.isFree ? this.rotation : 0;
+  }
+
+  /** @inheritdoc */
+  get isResizable() {
+    return false;
+  }
+
+  /** @inheritdoc */
+  get _mustBeDisabledOnCommit() {
+    return false;
+  }
+
+  /** @inheritdoc */
+  get _mustFixPosition() {
+    return !this._drawOutlines?.isFree;
   }
 
   // #3240 added by ngx-extended-pdf-viewer
   /** @inheritdoc */
   get addedEventValue() {
+    // Upstream (PR 21769) moved the highlight geometry into the drawing
+    // editor: #thickness now lives in _drawingOptions and #isFreeHighlight
+    // is _drawOutlines.isFree. Both may be unset while the editor is still
+    // being constructed, hence the optional chaining.
     return {
       color: this.color,
-      thickness: this.#thickness,
-      isFreeHighlight: this.#isFreeHighlight,
+      thickness: this._drawingOptions?.thickness,
+      isFreeHighlight: !!this._drawOutlines?.isFree,
       text: this.#text,
     };
   }
@@ -165,9 +263,9 @@ class HighlightEditor extends AnnotationEditor {
   get telemetryInitialData() {
     return {
       action: "added",
-      type: this.#isFreeHighlight ? "free_highlight" : "highlight",
+      type: this._drawOutlines.isFree ? "free_highlight" : "highlight",
       color: this._uiManager.getNonHCMColorName(this.color),
-      thickness: this.#thickness,
+      thickness: this._drawingOptions.thickness,
       methodOfCreation: this.#methodOfCreation,
     };
   }
@@ -185,325 +283,107 @@ class HighlightEditor extends AnnotationEditor {
     return { numberOfColors: data.get("color").size };
   }
 
-  #createOutlines() {
-    const outliner = new HighlightOutliner(
-      this.#boxes,
-      /* borderWidth = */ 0.001
-    );
-    this.#highlightOutlines = outliner.getOutlines();
-    [this.x, this.y, this.width, this.height] = this.#highlightOutlines.box;
-
-    const outlinerForOutline = new HighlightOutliner(
-      this.#boxes,
-      /* borderWidth = */ 0.0025,
-      /* innerMargin = */ 0.001,
-      this._uiManager.direction === "ltr"
-    );
-    this.#focusOutlines = outlinerForOutline.getOutlines();
-
-    const { firstPoint } = this.#highlightOutlines;
-    this.#firstPoint = [
-      (firstPoint[0] - this.x) / this.width,
-      (firstPoint[1] - this.y) / this.height,
-    ];
-    // The last point is in the pages coordinate system.
-    const { lastPoint } = this.#focusOutlines;
-    this.#lastPoint = [
-      (lastPoint[0] - this.x) / this.width,
-      (lastPoint[1] - this.y) / this.height,
-    ];
-  }
-
-  #createFreeOutlines({ highlightOutlines, highlightId, clipPathId }) {
-    this.#highlightOutlines = highlightOutlines;
-    const extraThickness = 1.5;
-    this.#focusOutlines = highlightOutlines.getNewOutline(
-      /* Slightly bigger than the highlight in order to have a little
-         space between the highlight and the outline. */
-      this.#thickness / 2 + extraThickness,
-      /* innerMargin = */ 0.0025
-    );
-
-    if (highlightId >= 0) {
-      this.#id = highlightId;
-      this.#clipPathId = clipPathId;
-      // We need to redraw the highlight because we change the coordinates to be
-      // in the box coordinate system.
-      this.parent.drawLayer.finalizeDraw(highlightId, {
-        bbox: highlightOutlines.box,
-        path: {
-          d: highlightOutlines.toSVGPath(),
-        },
-      });
-      this.#outlineId = this.parent.drawLayer.drawOutline(
-        {
-          rootClass: {
-            highlightOutline: true,
-            free: true,
-          },
-          bbox: this.#focusOutlines.box,
-          path: {
-            d: this.#focusOutlines.toSVGPath(),
-          },
-        },
-        /* mustRemoveSelfIntersections = */ true
-      );
-    } else if (this.parent) {
-      const angle = this.parent.viewport.rotation;
-      this.parent.drawLayer.updateProperties(this.#id, {
-        bbox: HighlightEditor.#rotateBbox(
-          this.#highlightOutlines.box,
-          (angle - this.rotation + 360) % 360
-        ),
-        path: {
-          d: highlightOutlines.toSVGPath(),
-        },
-      });
-      this.parent.drawLayer.updateProperties(this.#outlineId, {
-        bbox: HighlightEditor.#rotateBbox(this.#focusOutlines.box, angle),
-        path: {
-          d: this.#focusOutlines.toSVGPath(),
-        },
-      });
-    }
-    const [x, y, width, height] = highlightOutlines.box;
-    switch (this.rotation) {
-      case 0:
-        this.x = x;
-        this.y = y;
-        this.width = width;
-        this.height = height;
-        break;
-      case 90: {
-        const [pageWidth, pageHeight] = this.parentDimensions;
-        this.x = y;
-        this.y = 1 - x;
-        this.width = (width * pageHeight) / pageWidth;
-        this.height = (height * pageWidth) / pageHeight;
-        break;
-      }
-      case 180:
-        this.x = 1 - x;
-        this.y = 1 - y;
-        this.width = width;
-        this.height = height;
-        break;
-      case 270: {
-        const [pageWidth, pageHeight] = this.parentDimensions;
-        this.x = 1 - y;
-        this.y = x;
-        this.width = (width * pageHeight) / pageWidth;
-        this.height = (height * pageWidth) / pageHeight;
-        break;
-      }
-    }
-
-    const { firstPoint } = highlightOutlines;
-    this.#firstPoint = [
-      (firstPoint[0] - x) / width,
-      (firstPoint[1] - y) / height,
-    ];
-    const { lastPoint } = this.#focusOutlines;
-    this.#lastPoint = [(lastPoint[0] - x) / width, (lastPoint[1] - y) / height];
-  }
-
-  /** @inheritdoc */
-  static initialize(l10n, uiManager) {
-    AnnotationEditor.initialize(l10n, uiManager);
-    HighlightEditor._defaultColor ||=
-      uiManager.highlightColors?.values().next().value || "#fff066";
-  }
-
-  /** @inheritdoc */
-  static updateDefaultParams(type, value) {
-    switch (type) {
-      case AnnotationEditorParamsType.HIGHLIGHT_COLOR:
-        HighlightEditor._defaultColor = value;
-        break;
-      case AnnotationEditorParamsType.HIGHLIGHT_THICKNESS:
-        HighlightEditor._defaultThickness = value;
-        break;
-    }
-  }
-
   /** @inheritdoc */
   translateInPage(x, y) {}
 
   /** @inheritdoc */
   get toolbarPosition() {
-    return this.#lastPoint;
+    return this.#relativeToBox(this._drawOutlines.focusOutline.lastPoint);
   }
 
   /** @inheritdoc */
   get commentButtonPosition() {
-    return this.#firstPoint;
+    return this.#relativeToBox(this._drawOutlines.firstPoint);
+  }
+
+  #relativeToBox([pointX, pointY]) {
+    // The point and box use page coordinates.
+    const [x, y, width, height] = this._drawOutlines.box;
+    return [(pointX - x) / width, (pointY - y) / height];
   }
 
   /** @inheritdoc */
   updateParams(type, value) {
+    // #2256 / #3076 modified by ngx-extended-pdf-viewer
+    // Upstream (PR 21769) folded #updateColor/#updateThickness into the
+    // generic DrawingEditor property update, so the ngx events are
+    // dispatched here instead — same names and payload as before, and still
+    // only for highlights.
     switch (type) {
-      case AnnotationEditorParamsType.HIGHLIGHT_COLOR:
-        this.#updateColor(value);
+      case AnnotationEditorParamsType.HIGHLIGHT_COLOR: {
+        const previousValue = this.color;
+        // User-selected colors use the default opacity.
+        this._updateColorAndOpacity(
+          value,
+          HighlightEditor._DEFAULT_OPACITY,
+          type
+        );
+        this._reportTelemetry(
+          {
+            action: "color_changed",
+            color: this._uiManager.getNonHCMColorName(value),
+          },
+          /* mustWait = */ true
+        );
+        this._dispatchEditorEvent("colorChanged", { value, previousValue });
         break;
-      case AnnotationEditorParamsType.HIGHLIGHT_THICKNESS:
-        this.#updateThickness(value);
+      }
+      case AnnotationEditorParamsType.HIGHLIGHT_THICKNESS: {
+        const previousValue = this._drawingOptions?.thickness;
+        super.updateParams(type, value);
+        this._reportTelemetry(
+          { action: "thickness_changed", thickness: value },
+          /* mustWait = */ true
+        );
+        this._dispatchEditorEvent("thicknessChanged", { value, previousValue });
         break;
+      }
     }
-  }
-
-  static get defaultPropertiesToUpdate() {
-    return [
-      [
-        AnnotationEditorParamsType.HIGHLIGHT_COLOR,
-        HighlightEditor._defaultColor,
-      ],
-      [
-        AnnotationEditorParamsType.HIGHLIGHT_THICKNESS,
-        HighlightEditor._defaultThickness,
-      ],
-    ];
+    // #2256 / #3076 end of modification by ngx-extended-pdf-viewer
   }
 
   /** @inheritdoc */
   get propertiesToUpdate() {
-    return [
-      [
-        AnnotationEditorParamsType.HIGHLIGHT_COLOR,
-        this.color || HighlightEditor._defaultColor,
-      ],
-      [
-        AnnotationEditorParamsType.HIGHLIGHT_THICKNESS,
-        this.#thickness || HighlightEditor._defaultThickness,
-      ],
-      [AnnotationEditorParamsType.HIGHLIGHT_FREE, this.#isFreeHighlight],
-    ];
-  }
-
-  /** @inheritdoc */
-  onUpdatedColor() {
-    this.parent?.drawLayer.updateProperties(this.#id, {
-      root: {
-        fill: this.color,
-        "fill-opacity": this.opacity,
-      },
-    });
-    this.#colorPicker?.updateColor(this.color);
-    super.onUpdatedColor();
-  }
-
-  /**
-   * Update the color and make this action undoable.
-   * @param {string} color
-   */
-  #updateColor(color) {
-    const setColorAndOpacity = (col, opa) => {
-      this.color = col;
-      this.opacity = opa;
-      this.onUpdatedColor();
-    };
-    const savedColor = this.color;
-    const savedOpacity = this.opacity;
-    this.addCommands({
-      cmd: setColorAndOpacity.bind(
-        this,
-        color,
-        HighlightEditor._defaultOpacity
-      ),
-      undo: setColorAndOpacity.bind(this, savedColor, savedOpacity),
-      post: this._uiManager.updateUI.bind(this._uiManager, this),
-      mustExec: true,
-      type: AnnotationEditorParamsType.HIGHLIGHT_COLOR,
-      overwriteIfSameType: true,
-      keepUndo: true,
-    });
-
-    this._reportTelemetry(
-      {
-        action: "color_changed",
-        color: this._uiManager.getNonHCMColorName(color),
-      },
-      /* mustWait = */ true
-    );
-    // #2256 / #3076 modified by ngx-extended-pdf-viewer
-    this._dispatchEditorEvent("colorChanged", { value: color, previousValue: savedColor });
-    // #2256 / #3076 end of modification by ngx-extended-pdf-viewer
-  }
-
-  /**
-   * Update the thickness and make this action undoable.
-   * @param {number} thickness
-   */
-  #updateThickness(thickness) {
-    const savedThickness = this.#thickness;
-    const setThickness = th => {
-      this.#thickness = th;
-      this.#changeThickness(th);
-    };
-    this.addCommands({
-      cmd: setThickness.bind(this, thickness),
-      undo: setThickness.bind(this, savedThickness),
-      post: this._uiManager.updateUI.bind(this._uiManager, this),
-      mustExec: true,
-      type: AnnotationEditorParamsType.INK_THICKNESS,
-      overwriteIfSameType: true,
-      keepUndo: true,
-    });
-    this._reportTelemetry(
-      { action: "thickness_changed", thickness },
-      /* mustWait = */ true
-    );
-    // #2256 / #3076 modified by ngx-extended-pdf-viewer
-    this._dispatchEditorEvent("thicknessChanged", { value: thickness, previousValue: savedThickness });
-    // #2256 / #3076 end of modification by ngx-extended-pdf-viewer
+    const properties = super.propertiesToUpdate;
+    properties.push([
+      AnnotationEditorParamsType.HIGHLIGHT_FREE,
+      this._drawOutlines.isFree,
+    ]);
+    return properties;
   }
 
   /** @inheritdoc */
   get toolbarButtons() {
     if (this._uiManager.highlightColors) {
-      const colorPicker = (this.#colorPicker = new ColorPicker({
-        editor: this,
-      }));
-      return [["colorPicker", colorPicker]];
+      // The toolbar destroys its picker, so rebuild it with the toolbar.
+      this._colorPicker = new ColorPicker({ editor: this });
+      return [["colorPicker", this._colorPicker]];
     }
     return super.toolbarButtons;
   }
 
   /** @inheritdoc */
-  disableEditing() {
-    super.disableEditing();
-    this.div.classList.toggle("disabled", true);
-  }
-
-  /** @inheritdoc */
-  enableEditing() {
-    super.enableEditing();
-    this.div.classList.toggle("disabled", false);
-  }
-
-  /** @inheritdoc */
   fixAndSetPosition() {
-    return super.fixAndSetPosition(this.#getRotation());
-  }
-
-  /** @inheritdoc */
-  getBaseTranslation() {
-    // The editor itself doesn't have any CSS border (we're drawing one
-    // ourselves in using SVG).
-    return [0, 0];
+    return super.fixAndSetPosition(this._drawRotation);
   }
 
   /** @inheritdoc */
   getRect(tx, ty) {
-    return super.getRect(tx, ty, this.#getRotation());
+    return super.getRect(tx, ty, this._drawRotation);
   }
 
   /** @inheritdoc */
   onceAdded(focus) {
     if (this.#isErasePiece) {
       // The eraser step owns the undo of the pieces it creates, and a new
-      // piece must not steal the focus: that would select it and leave the
-      // eraser mode.
+      // piece must not steal the focus (that would leave the eraser mode).
       return;
+    }
+    if (this.#suppressFocusOnce) {
+      // Restored by the eraser through undo/redo: keep the current mode by
+      // not focusing (focusing would select the highlight and switch mode).
+      this.#suppressFocusOnce = false;
+      focus = false;
     }
     if (!this.annotationElementId) {
       this.parent.addUndoableEditor(this);
@@ -515,7 +395,6 @@ class HighlightEditor extends AnnotationEditor {
 
   /** @inheritdoc */
   remove() {
-    this.#cleanDrawLayer();
     this._reportTelemetry({
       action: "deleted",
     });
@@ -523,161 +402,199 @@ class HighlightEditor extends AnnotationEditor {
   }
 
   /** @inheritdoc */
-  rebuild() {
-    if (!this.parent) {
-      return;
-    }
-    super.rebuild();
-    if (this.div === null) {
-      return;
-    }
-
-    this.#addToDrawLayer();
-
-    if (!this.isAttachedToDOM) {
-      // At some point this editor was removed and we're rebuilding it,
-      // hence we must add it to its parent.
-      this.parent.add(this);
-    }
-  }
-
-  setParent(parent) {
-    let mustBeSelected = false;
-    if (this.parent && !parent) {
-      this.#cleanDrawLayer();
-    } else if (parent) {
-      this.#addToDrawLayer(parent);
-      // If mustBeSelected is true it means that this editor was selected
-      // when its parent has been destroyed, hence we must select it again.
-      mustBeSelected =
-        !this.parent && this.div?.classList.contains("selectedEditor");
-    }
-    super.setParent(parent);
-    this.show(this._isVisible);
-    if (mustBeSelected) {
-      // We select it after the parent has been set.
-      this.select();
-    }
-  }
-
-  #changeThickness(thickness) {
-    if (!this.#isFreeHighlight) {
-      return;
-    }
-    this.#createFreeOutlines({
-      highlightOutlines: this.#highlightOutlines.getNewOutline(thickness / 2),
-    });
-    this.fixAndSetPosition();
-    this.setDims();
-  }
-
-  #cleanDrawLayer() {
-    if (this.#id === null || !this.parent) {
-      return;
-    }
-    this.parent.drawLayer.remove(this.#id);
-    this.#id = null;
-    this.parent.drawLayer.remove(this.#outlineId);
-    this.#outlineId = null;
-  }
-
-  #addToDrawLayer(parent = this.parent) {
-    if (this.#id !== null) {
-      return;
-    }
-    ({ id: this.#id, clipPathId: this.#clipPathId } = parent.drawLayer.draw(
-      {
-        bbox: this.#highlightOutlines.box,
-        root: {
-          viewBox: "0 0 1 1",
-          fill: this.color,
-          "fill-opacity": this.opacity,
-        },
-        rootClass: {
-          highlight: true,
-          free: this.#isFreeHighlight,
-        },
-        path: {
-          d: this.#highlightOutlines.toSVGPath(),
-        },
-      },
-      /* isPathUpdatable = */ false,
-      /* hasClip = */ true
-    ));
-    this.#outlineId = parent.drawLayer.drawOutline(
-      {
-        rootClass: {
-          highlightOutline: true,
-          free: this.#isFreeHighlight,
-        },
-        bbox: this.#focusOutlines.box,
-        path: {
-          d: this.#focusOutlines.toSVGPath(),
-        },
-      },
-      /* mustRemoveSelfIntersections = */ this.#isFreeHighlight
-    );
-
-    if (this.#highlightDiv) {
-      this.#highlightDiv.style.clipPath = this.#clipPathId;
-    }
-  }
-
-  static #rotateBbox([x, y, width, height], angle) {
-    switch (angle) {
-      case 90:
-        return [1 - y - height, x, height, width];
-      case 180:
-        return [1 - x - width, 1 - y - height, width, height];
-      case 270:
-        return [y, 1 - x - width, height, width];
-    }
-    return [x, y, width, height];
-  }
-
-  /**
-   * Rotate a point given in normalized layer coordinates, consistently with
-   * #rotateBbox.
-   */
-  static #rotateNormalizedPoint(x, y, angle) {
-    switch (angle) {
-      case 90:
-        return [1 - y, x];
-      case 180:
-        return [1 - x, 1 - y];
-      case 270:
-        return [y, 1 - x];
-    }
-    return [x, y];
+  get erasable() {
+    // Only drawings can be erased: a free (drawn) highlight is, a text
+    // (selection) highlight isn't.
+    return !!this._drawOutlines?.isFree;
   }
 
   /** @inheritdoc */
-  rotate(angle) {
-    // We need to rotate the svgs because of the coordinates system.
-    const { drawLayer } = this.parent;
-    let box;
-    if (this.#isFreeHighlight) {
-      angle = (angle - this.rotation + 360) % 360;
-      box = HighlightEditor.#rotateBbox(this.#highlightOutlines.box, angle);
-    } else {
-      // An highlight annotation is always drawn horizontally.
-      box = HighlightEditor.#rotateBbox(
-        [this.x, this.y, this.width, this.height],
-        angle
-      );
+  startErase(layerRect) {
+    if (!this._drawOutlines?.isFree) {
+      return null;
     }
-    drawLayer.updateProperties(this.#id, {
-      bbox: box,
-      root: {
-        "data-main-rotation": angle,
-      },
+    // The serialized points are in PDF page coordinates (one continuous
+    // stroke for a free highlight); map them to layer pixels in the current
+    // view frame, exactly like the ink editor does.
+    const rect = this.getRect(0, 0);
+    // The free-highlight outline stores points in the canonical (unrotated)
+    // page frame; the view rotation is applied by the draw layer. Serialize
+    // canonically and fold the view rotation into the page<->layer transform.
+    const viewRotation = this.parent.viewport.rotation;
+    const { points } = this._drawOutlines.serialize(rect, 0);
+    const transform = makeLayerTransform(
+      viewRotation,
+      layerRect,
+      this.pageTranslation,
+      this.pageDimensions
+    );
+    const paths = [];
+    for (const path of points) {
+      const len = path.length;
+      if (len < 2) {
+        continue;
+      }
+      const layerPath = new Float32Array(len);
+      for (let i = 0; i < len; i += 2) {
+        const [x, y] = transform.toLayer(path[i], path[i + 1]);
+        layerPath[i] = x;
+        layerPath[i + 1] = y;
+      }
+      paths.push(layerPath);
+    }
+    if (paths.length === 0) {
+      return null;
+    }
+
+    // The eraser must react as soon as it touches the visible highlight.
+    const strokeRadius =
+      (this._drawingOptions.thickness / 2) * this.parentScale;
+    this.#eraseSession = {
+      paths,
+      layerW: layerRect.width,
+      layerH: layerRect.height,
+      strokeRadius,
+      modified: false,
+      dirty: false,
+    };
+    return getPathsBBox(paths, strokeRadius);
+  }
+
+  /** @inheritdoc */
+  erase(x, y, radius, prevX = x, prevY = y) {
+    const session = this.#eraseSession;
+    if (!session) {
+      return;
+    }
+    const { paths, modified } = sweepCircleOverPaths(
+      session.paths,
+      x,
+      y,
+      radius + session.strokeRadius,
+      prevX,
+      prevY
+    );
+    if (modified) {
+      session.paths = paths;
+      session.modified = true;
+      session.dirty = true;
+    }
+  }
+
+  /** @inheritdoc */
+  renderErase() {
+    const session = this.#eraseSession;
+    if (!session?.dirty || !this.parent) {
+      return;
+    }
+    session.dirty = false;
+    // Preview: redraw the fill with the remaining pieces. The focus outline is
+    // left as-is during the drag and rebuilt once the session ends.
+    const d = this.#buildPieceOutlines(session)
+      .map(outline => outline.toSVGPath())
+      .join(" ");
+    this.parent.drawLayer.updateProperties(this._drawId, {
+      path: { d },
     });
-    drawLayer.updateProperties(this.#outlineId, {
-      bbox: HighlightEditor.#rotateBbox(this.#focusOutlines.box, angle),
-      root: {
-        "data-main-rotation": angle,
-      },
+  }
+
+  /** @inheritdoc */
+  endErase() {
+    const session = this.#eraseSession;
+    this.#eraseSession = null;
+    if (!session?.modified) {
+      return {};
+    }
+
+    // A free highlight is a single continuous stroke, so a cut yields several
+    // disjoint pieces. Rebuild each as a fresh highlight editor and drop the
+    // original; undo restores the original and removes the pieces.
+    const parent = this.parent;
+    const outlines = this.#buildPieceOutlines(session);
+    let pieces = null;
+
+    const cmd = () => {
+      this.remove();
+      if (pieces) {
+        for (const piece of pieces) {
+          this._uiManager.rebuild(piece);
+        }
+      } else {
+        pieces = outlines.map(outline => this.#spawnPiece(parent, outline));
+      }
+    };
+    const undo = () => {
+      if (pieces) {
+        for (const piece of pieces) {
+          piece.remove();
+        }
+      }
+      this.#suppressFocusOnce = true;
+      parent.addOrRebuild(this);
+    };
+    cmd();
+
+    return { cmd, undo };
+  }
+
+  /**
+   * Rebuild one FreeHighlightOutline per remaining piece of the erase session,
+   * in the current view frame. Pieces too short to form a stroke are dropped.
+   */
+  #buildPieceOutlines({ paths, layerW, layerH }) {
+    // Rebuild each remaining piece in the current-view layer frame, exactly
+    // like a freshly drawn highlight (see createDrawerInstance). This keeps the
+    // pieces correctly placed and oriented whatever the page rotation, because
+    // their rotation then matches the view and no re-rotation is needed.
+    const box = [0, 0, layerW, layerH];
+    const halfThickness = this._drawingOptions.thickness / 2;
+    const isLTR = this._uiManager.direction === "ltr";
+    const scale = this.parentScale;
+    const outlines = [];
+    for (const path of paths) {
+      if (path.length < 4) {
+        continue;
+      }
+      const outliner = new FreeHighlightOutliner(
+        path[0],
+        path[1],
+        box,
+        scale,
+        halfThickness,
+        isLTR,
+        /* innerMargin = */ 0.001
+      );
+      for (let i = 2, ii = path.length; i < ii; i += 2) {
+        outliner.add(path[i], path[i + 1]);
+      }
+      if (outliner.isEmpty()) {
+        continue;
+      }
+      const outline = outliner.getOutlines();
+      outline.buildFocusOutline(this._drawingOptions.thickness);
+      outlines.push(outline);
+    }
+    return outlines;
+  }
+
+  /**
+   * Create a new free highlight editor for a piece split off by the eraser.
+   */
+  #spawnPiece(parent, drawOutlines) {
+    const piece = new HighlightEditor({
+      parent,
+      id: this._uiManager.getId(),
+      uiManager: this._uiManager,
+      eventBus: this.eventBus,
+      x: 0,
+      y: 0,
+      isCentered: false,
+      drawOutlines,
+      drawingOptions: this._drawingOptions.clone(),
+      isErasePiece: true,
     });
+    parent.add(piece);
+    return piece;
   }
 
   /** @inheritdoc */
@@ -691,44 +608,16 @@ class HighlightEditor extends AnnotationEditor {
       div.setAttribute("aria-label", this.#text);
       div.setAttribute("role", "mark");
     }
-    if (this.#isFreeHighlight) {
+    if (this._drawOutlines.isFree) {
       div.classList.add("free");
     } else {
-      this.div.addEventListener("keydown", this.#keydown.bind(this), {
+      div.addEventListener("keydown", this.#keydown.bind(this), {
         signal: this._uiManager._signal,
       });
     }
-    const highlightDiv = (this.#highlightDiv = document.createElement("div"));
-    div.append(highlightDiv);
-    highlightDiv.setAttribute("aria-hidden", "true");
-    highlightDiv.className = "internal";
-    highlightDiv.style.clipPath = this.#clipPathId;
-    this.setDims();
-
-    bindEvents(this, this.#highlightDiv, ["pointerover", "pointerleave"]);
     this.enableEditing();
 
     return div;
-  }
-
-  pointerover() {
-    if (!this.isSelected) {
-      this.parent?.drawLayer.updateProperties(this.#outlineId, {
-        rootClass: {
-          hovered: true,
-        },
-      });
-    }
-  }
-
-  pointerleave() {
-    if (!this.isSelected) {
-      this.parent?.drawLayer.updateProperties(this.#outlineId, {
-        rootClass: {
-          hovered: false,
-        },
-      });
-    }
   }
 
   #keydown(event) {
@@ -762,402 +651,120 @@ class HighlightEditor extends AnnotationEditor {
   }
 
   /** @inheritdoc */
-  select() {
-    super.select();
-    if (!this.#outlineId) {
-      return;
-    }
-    this.parent?.drawLayer.updateProperties(this.#outlineId, {
-      rootClass: {
-        hovered: false,
-        selected: true,
-      },
-    });
-  }
-
-  /** @inheritdoc */
   unselect() {
     super.unselect();
-    if (!this.#outlineId) {
-      return;
-    }
-    this.parent?.drawLayer.updateProperties(this.#outlineId, {
-      rootClass: {
-        selected: false,
-      },
-    });
-    if (!this.#isFreeHighlight) {
+    if (!this._drawOutlines.isFree) {
       this.#setCaret(/* start = */ false);
     }
   }
 
   /** @inheritdoc */
-  get _mustFixPosition() {
-    return !this.#isFreeHighlight;
+  static createDrawerInstance({ x, y, box, parent, isLTR }) {
+    // The outliner spreads the stroke on both sides of the pointer path, hence
+    // it takes the half-thickness. The inner margin slightly inflates the
+    // bounding box, else the shape would be clipped by its own SVG viewport.
+    return new FreeHighlightDrawer(
+      x,
+      y,
+      box,
+      parent.scale,
+      this._defaultDrawingOptions.thickness / 2,
+      isLTR,
+      /* innerMargin = */ 0.001
+    );
   }
 
   /** @inheritdoc */
-  show(visible = this._isVisible) {
-    super.show(visible);
-    if (this.parent) {
-      this.parent.drawLayer.updateProperties(this.#id, {
-        rootClass: {
-          hidden: !visible,
-        },
-      });
-      this.parent.drawLayer.updateProperties(this.#outlineId, {
-        rootClass: {
-          hidden: !visible,
-        },
-      });
-    }
+  static _getDrawingTarget(parent, { target }) {
+    // The event target can be a child of the text layer.
+    return target.closest(".textLayer");
   }
 
-  #getRotation() {
-    // Highlight annotations are always drawn horizontally but if
-    // a free highlight annotation can be rotated.
-    return this.#isFreeHighlight ? this.rotation : 0;
+  /** @inheritdoc */
+  static _getPointerCoords({ x, y }) {
+    // Child-relative offsets don't match the text layer's client box.
+    return [x, y];
   }
 
-  #serializeBoxes() {
-    if (this.#isFreeHighlight) {
-      return null;
-    }
-    const [pageWidth, pageHeight] = this.pageDimensions;
-    const [pageX, pageY] = this.pageTranslation;
-    const boxes = this.#boxes;
-    const quadPoints = new Float32Array(boxes.length * 8);
-    let i = 0;
-    for (const { x, y, width, height } of boxes) {
-      const sx = x * pageWidth + pageX;
-      const sy = (1 - y) * pageHeight + pageY;
-      // Serializes the rectangle in the Adobe Acrobat format.
-      // The rectangle's coordinates (b = bottom, t = top, L = left, R = right)
-      // are ordered as follows: tL, tR, bL, bR (bL origin).
-      quadPoints[i] = quadPoints[i + 4] = sx;
-      quadPoints[i + 1] = quadPoints[i + 3] = sy;
-      quadPoints[i + 2] = quadPoints[i + 6] = sx + width * pageWidth;
-      quadPoints[i + 5] = quadPoints[i + 7] = sy - height * pageHeight;
-      i += 8;
-    }
-    return quadPoints;
-  }
-
-  #serializeOutlines(rect) {
-    return this.#highlightOutlines.serialize(rect, this.#getRotation());
-  }
-
-  static startHighlighting(parent, isLTR, { target: textLayer, x, y }) {
-    const {
-      x: layerX,
-      y: layerY,
-      width: parentWidth,
-      height: parentHeight,
-    } = textLayer.getBoundingClientRect();
-
-    const ac = new AbortController();
-    const signal = parent.combinedSignal(ac);
-
-    const pointerUpCallback = e => {
-      ac.abort();
-      this.#endHighlight(parent, e);
-    };
-    window.addEventListener("blur", pointerUpCallback, { signal });
-    window.addEventListener("pointerup", pointerUpCallback, { signal });
+  /** @inheritdoc */
+  static _addDrawingListeners(target, signal) {
+    // Highlights bypass AnnotationEditorLayer.startDrawingSession.
+    target.classList.add("free");
+    signal.addEventListener("abort", () => target.classList.remove("free"), {
+      once: true,
+    });
+    window.addEventListener("blur", () => this._endDraw(null), { signal });
     window.addEventListener(
       "pointerdown",
-      stopEvent /* Avoid to have undesired clicks during the drawing. */,
+      stopEvent /* Prevent pointerdown from reaching page content. */,
       {
         capture: true,
         passive: false,
         signal,
       }
     );
-    window.addEventListener("contextmenu", noContextMenu, { signal });
+  }
 
-    textLayer.addEventListener(
-      "pointermove",
-      this.#highlightMove.bind(this, parent),
-      { signal }
-    );
-    this._freeHighlight = new FreeHighlightOutliner(
-      { x, y },
-      [layerX, layerY, parentWidth, parentHeight],
-      parent.scale,
-      this._defaultThickness / 2,
-      isLTR,
+  /** @inheritdoc */
+  static _endDrawingSession(isAborted = false) {
+    return this.endDrawing(isAborted);
+  }
+
+  /** @inheritdoc */
+  createDrawingOptions({ color, opacity, thickness }) {
+    const { _defaultDrawingOptions: defaults, _DEFAULT_OPACITY } =
+      HighlightEditor;
+    this._drawingOptions = HighlightEditor.getDefaultDrawingOptions({
+      fill: Util.makeHexColor(...color),
+      "fill-opacity": opacity || _DEFAULT_OPACITY,
+      thickness: thickness || defaults.thickness,
+    });
+  }
+
+  /** @inheritdoc */
+  static deserializeDraw(
+    pageX,
+    pageY,
+    pageWidth,
+    pageHeight,
+    _innerMargin,
+    data,
+    uiManager
+  ) {
+    const { quadPoints } = data;
+    if (quadPoints) {
+      const boxes = [];
+      for (let i = 0, ii = quadPoints.length; i < ii; i += 8) {
+        boxes.push({
+          x: (quadPoints[i] - pageX) / pageWidth,
+          y: 1 - (quadPoints[i + 1] - pageY) / pageHeight,
+          width: (quadPoints[i + 2] - quadPoints[i]) / pageWidth,
+          height: (quadPoints[i + 1] - quadPoints[i + 5]) / pageHeight,
+        });
+      }
+      return HighlightOutline.build(boxes, uiManager.direction === "ltr");
+    }
+
+    const thickness = data.thickness || this._defaultDrawingOptions.thickness;
+    const points = (data.inkLists || data.outlines.points)[0];
+    // As in `createDrawerInstance`, the outliner takes the half-thickness and a
+    // non-null inner margin.
+    const outliner = new FreeHighlightOutliner(
+      points[0] - pageX,
+      pageHeight - (points[1] - pageY),
+      [0, 0, pageWidth, pageHeight],
+      1,
+      thickness / 2,
+      true,
       /* innerMargin = */ 0.001
     );
-    ({ id: this._freeHighlightId, clipPathId: this._freeHighlightClipId } =
-      parent.drawLayer.draw(
-        {
-          bbox: [0, 0, 1, 1],
-          root: {
-            viewBox: "0 0 1 1",
-            fill: this._defaultColor,
-            "fill-opacity": this._defaultOpacity,
-          },
-          rootClass: {
-            highlight: true,
-            free: true,
-          },
-          path: {
-            d: this._freeHighlight.toSVGPath(),
-          },
-        },
-        /* isPathUpdatable = */ true,
-        /* hasClip = */ true
-      ));
-  }
-
-  static #highlightMove(parent, event) {
-    if (this._freeHighlight.add(event)) {
-      // Redraw only if the point has been added.
-      parent.drawLayer.updateProperties(this._freeHighlightId, {
-        path: {
-          d: this._freeHighlight.toSVGPath(),
-        },
-      });
-    }
-  }
-
-  static #endHighlight(parent, event) {
-    if (!this._freeHighlight.isEmpty()) {
-      parent.createAndAddNewEditor(event, false, {
-        highlightId: this._freeHighlightId,
-        highlightOutlines: this._freeHighlight.getOutlines(),
-        clipPathId: this._freeHighlightClipId,
-        methodOfCreation: "main_toolbar",
-      });
-    } else {
-      parent.drawLayer.remove(this._freeHighlightId);
-    }
-    this._freeHighlightId = -1;
-    this._freeHighlight = null;
-    this._freeHighlightClipId = "";
-  }
-
-  /** @inheritdoc */
-  get erasable() {
-    // Only drawings can be erased: a free (drawn) highlight is, a text
-    // (selection) highlight isn't. The eraser skips non-erasable editors.
-    return this.#isFreeHighlight;
-  }
-
-  /** @inheritdoc */
-  startErase({ width: layerW, height: layerH }) {
-    if (!this.#highlightOutlines) {
-      return null;
-    }
-    const { rotation } = this.parent.viewport;
-    // The eraser must react as soon as it touches the visible highlight.
-    const strokeRadius = (this.#thickness / 2) * this.parentScale;
-    // The outline points are fractions of the layer in the frame the
-    // highlight was created in: bring them into the current frame.
-    const angle = (rotation - this.rotation + 360) % 360;
-    const points = this.#highlightOutlines.getLayerPoints();
-    const path = new Float32Array(points.length);
     for (let i = 0, ii = points.length; i < ii; i += 2) {
-      const [x, y] = HighlightEditor.#rotateNormalizedPoint(
-        points[i],
-        points[i + 1],
-        angle
-      );
-      path[i] = x * layerW;
-      path[i + 1] = y * layerH;
+      outliner.add(points[i] - pageX, pageHeight - (points[i + 1] - pageY));
     }
-    this.#eraseSession = {
-      paths: [path],
-      strokeRadius,
-      layerW,
-      layerH,
-      modified: false,
-      dirty: false,
-    };
-    return getPathsBBox([path], strokeRadius);
-  }
+    const outlines = outliner.getOutlines();
+    outlines.buildFocusOutline(thickness);
 
-  /** @inheritdoc */
-  erase(x, y, radius, prevX = x, prevY = y) {
-    const session = this.#eraseSession;
-    if (!session) {
-      return;
-    }
-    const { paths, modified } = sweepCircleOverPaths(
-      session.paths,
-      x,
-      y,
-      radius + session.strokeRadius,
-      prevX,
-      prevY
-    );
-    if (modified) {
-      session.paths = paths;
-      session.modified = true;
-      session.dirty = true;
-    }
-  }
-
-  /** @inheritdoc */
-  renderErase() {
-    const session = this.#eraseSession;
-    if (!session?.dirty || !this.parent) {
-      return;
-    }
-    session.dirty = false;
-    // Preview: draw the remaining pieces in the current frame over the whole
-    // layer. The final outlines are only built once the session ends.
-    const d = this.#buildEraseOutliners(session)
-      .map(outliner => outliner.toSVGPath())
-      .join(" ");
-    this.parent.drawLayer.updateProperties(this.#id, {
-      bbox: [0, 0, 1, 1],
-      root: { "data-main-rotation": 0 },
-      path: { d },
-    });
-  }
-
-  /** @inheritdoc */
-  endErase() {
-    const session = this.#eraseSession;
-    this.#eraseSession = null;
-    if (!session?.modified) {
-      return {};
-    }
-
-    const outliners = this.#buildEraseOutliners(session);
-    if (outliners.length === 0) {
-      return this.#getEraseRemovalCommands();
-    }
-
-    // The remaining pieces are rebuilt in the current frame (as if they had
-    // just been drawn): this editor keeps the first one, the others become
-    // new editors.
-    const { rotation } = this.parent.viewport;
-    const savedOutlines = this.#highlightOutlines;
-    const savedRotation = this.rotation;
-    const [first, ...rest] = outliners;
-    const firstOutlines = first.getOutlines();
-    let pieces = null;
-
-    const setOutlines = (highlightOutlines, editorRotation) => {
-      this.rotation = editorRotation;
-      this.#createFreeOutlines({ highlightOutlines });
-      if (this.parent) {
-        this.rotate(this.parent.viewport.rotation);
-      }
-      this.fixAndSetPosition();
-      this.setDims();
-    };
-    const cmd = () => {
-      setOutlines(firstOutlines, rotation);
-      if (pieces) {
-        for (const piece of pieces) {
-          this._uiManager.rebuild(piece);
-          if (piece.parent) {
-            piece.rotate(piece.parent.viewport.rotation);
-          }
-        }
-      } else {
-        pieces = rest.map(outliner => this.#createErasePiece(outliner));
-      }
-    };
-    const undo = () => {
-      for (const piece of pieces) {
-        piece.remove();
-      }
-      setOutlines(savedOutlines, savedRotation);
-    };
-    cmd();
-
-    return { cmd, undo };
-  }
-
-  /**
-   * Build a fresh outliner, in the current frame, for each remaining piece
-   * of the erase session (same recipe as startHighlighting).
-   * Pieces shorter than the outliner's minimum distance vanish.
-   */
-  #buildEraseOutliners({ paths, layerW, layerH }) {
-    const outliners = [];
-    for (const path of paths) {
-      const outliner = new FreeHighlightOutliner(
-        { x: path[0], y: path[1] },
-        [0, 0, layerW, layerH],
-        this.parent.scale,
-        this.#thickness / 2,
-        this._uiManager.direction === "ltr",
-        /* innerMargin = */ 0.001
-      );
-      for (let i = 2, ii = path.length; i < ii; i += 2) {
-        outliner.add({ x: path[i], y: path[i + 1] });
-      }
-      if (!outliner.isEmpty()) {
-        outliners.push(outliner);
-      }
-    }
-    return outliners;
-  }
-
-  /**
-   * Create a new free highlight editor for a piece split off by the eraser.
-   */
-  #createErasePiece(outliner) {
-    const parent = this.parent;
-    const { id, clipPathId } = parent.drawLayer.draw(
-      {
-        bbox: [0, 0, 1, 1],
-        root: {
-          viewBox: "0 0 1 1",
-          fill: this.color,
-          "fill-opacity": this.opacity,
-        },
-        rootClass: {
-          highlight: true,
-          free: true,
-        },
-        path: {
-          d: outliner.toSVGPath(),
-        },
-      },
-      /* isPathUpdatable = */ true,
-      /* hasClip = */ true
-    );
-    const piece = new HighlightEditor({
-      parent,
-      id: this._uiManager.getId(),
-      uiManager: this._uiManager,
-      eventBus: this.eventBus,
-      x: 0,
-      y: 0,
-      isCentered: false,
-      highlightId: id,
-      highlightOutlines: outliner.getOutlines(),
-      clipPathId,
-      color: this.color,
-      opacity: this.opacity,
-      thickness: this.#thickness,
-      methodOfCreation: "eraser",
-      isErasePiece: true,
-    });
-    parent.add(piece);
-    return piece;
-  }
-
-  /**
-   * The whole highlight has been erased: remove the editor now and return
-   * the commands to redo/undo the removal.
-   */
-  #getEraseRemovalCommands() {
-    const parent = this.parent;
-    this.remove();
-    return {
-      cmd: () => this.remove(),
-      undo: () => {
-        parent.addOrRebuild(this);
-        this.rotate(this.parent.viewport.rotation);
-      },
-    };
+    return outlines;
   }
 
   /** @inheritdoc */
@@ -1187,7 +794,6 @@ class HighlightEditor extends AnnotationEditor {
         color: Array.from(color),
         opacity,
         quadPoints,
-        boxes: null,
         pageIndex: pageNumber - 1,
         rect: rect.slice(0),
         rotation,
@@ -1285,7 +891,6 @@ class HighlightEditor extends AnnotationEditor {
         color: Array.from(color),
         thickness,
         inkLists,
-        boxes: null,
         pageIndex: pageNumber - 1,
         rect: rect.slice(0),
         rotation,
@@ -1300,81 +905,10 @@ class HighlightEditor extends AnnotationEditor {
       };
     }
 
-    const { color, quadPoints, inkLists, outlines, opacity } = data;
     const editor = await super.deserialize(data, parent, uiManager);
-
-    editor.color = Util.makeHexColor(...color);
-    editor.opacity = opacity || 1;
-    if (inkLists) {
-      editor.#thickness = data.thickness;
-    }
     editor._initialData = initialData;
     if (data.comment) {
       editor.setCommentData(data);
-    }
-
-    const [pageWidth, pageHeight] = editor.pageDimensions;
-    const [pageX, pageY] = editor.pageTranslation;
-
-    if (quadPoints) {
-      const boxes = (editor.#boxes = []);
-      for (let i = 0; i < quadPoints.length; i += 8) {
-        boxes.push({
-          x: (quadPoints[i] - pageX) / pageWidth,
-          y: 1 - (quadPoints[i + 1] - pageY) / pageHeight,
-          width: (quadPoints[i + 2] - quadPoints[i]) / pageWidth,
-          height: (quadPoints[i + 1] - quadPoints[i + 5]) / pageHeight,
-        });
-      }
-      editor.#createOutlines();
-      editor.#addToDrawLayer();
-      editor.rotate(editor.rotation);
-    } else if (inkLists || outlines) {
-      editor.#isFreeHighlight = true;
-      const points = (inkLists || outlines.points)[0];
-      const point = {
-        x: points[0] - pageX,
-        y: pageHeight - (points[1] - pageY),
-      };
-      const outliner = new FreeHighlightOutliner(
-        point,
-        [0, 0, pageWidth, pageHeight],
-        1,
-        editor.#thickness / 2,
-        true,
-        0.001
-      );
-      for (let i = 0, ii = points.length; i < ii; i += 2) {
-        point.x = points[i] - pageX;
-        point.y = pageHeight - (points[i + 1] - pageY);
-        outliner.add(point);
-      }
-      const { id, clipPathId } = parent.drawLayer.draw(
-        {
-          bbox: [0, 0, 1, 1],
-          root: {
-            viewBox: "0 0 1 1",
-            fill: editor.color,
-            "fill-opacity": editor._defaultOpacity,
-          },
-          rootClass: {
-            highlight: true,
-            free: true,
-          },
-          path: {
-            d: outliner.toSVGPath(),
-          },
-        },
-        /* isPathUpdatable = */ true,
-        /* hasClip = */ true
-      );
-      editor.#createFreeOutlines({
-        highlightOutlines: outliner.getOutlines(),
-        highlightId: id,
-        clipPathId,
-      });
-      editor.#addToDrawLayer();
-      editor.rotate(editor.parentRotation);
     }
 
     return editor;
@@ -1393,16 +927,23 @@ class HighlightEditor extends AnnotationEditor {
       return this.serializeDeleted();
     }
 
-    const color = AnnotationEditor._colorManager.convert(
-      this._uiManager.getNonHCMColor(this.color)
-    );
+    // #3076 modified by ngx-extended-pdf-viewer - pass the export context
     const serialized = super.serialize(isForCopying, context);
+    // #3076 end of modification by ngx-extended-pdf-viewer
     Object.assign(serialized, {
-      color,
+      color: AnnotationEditor._colorManager.convert(
+        this._uiManager.getNonHCMColor(this.color)
+      ),
       opacity: this.opacity,
-      thickness: this.#thickness,
-      quadPoints: this.#serializeBoxes(),
-      outlines: this.#serializeOutlines(serialized.rect),
+      thickness: this._drawingOptions.thickness,
+      quadPoints: this._drawOutlines.serializeQuadPoints(
+        this.pageTranslation,
+        this.pageDimensions
+      ),
+      outlines: this._drawOutlines.serialize(
+        serialized.rect,
+        this._drawRotation
+      ),
     });
     // #3116 modified by ngx-extended-pdf-viewer
     // Skip the hasEdited check when serializing a copy. Otherwise, the comment
@@ -1450,10 +991,6 @@ class HighlightEditor extends AnnotationEditor {
     });
 
     return null;
-  }
-
-  static canCreateNewEmptyEditor() {
-    return false;
   }
 }
 

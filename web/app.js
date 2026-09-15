@@ -32,6 +32,8 @@ import {
   isValidRotation,
   isValidScrollMode,
   isValidSpreadMode,
+  MAX_SCALE,
+  MIN_SCALE,
   normalizeWheelEventDirection,
   parseQueryString,
   ProgressBar,
@@ -50,6 +52,7 @@ import {
   InvalidPDFException,
   isDataScheme,
   isPdfFile,
+  MathClamp,
   OutputScale,
   PDFWorker,
   ResponseException,
@@ -397,6 +400,7 @@ appConfig: null,
     // Set some specific preferences for tests.
     if (typeof PDFJSDev !== "undefined" && PDFJSDev.test("TESTING")) {
       Object.assign(opts, {
+        annotationEditorMode: x => parseInt(x, 10),
         capCanvasAreaFactor: x => parseInt(x, 10),
         docBaseUrl: x => x,
         enableAltText: x => x === "true",
@@ -866,7 +870,7 @@ appConfig: null,
     }
 
     if (appConfig.secondaryToolbar) {
-      if (AppOptions.get("enableAltText")) {
+      if (AppOptions.get("enableAltText") && this.imageAltTextSettings) {
         appConfig.secondaryToolbar.imageAltTextSettingsButton?.classList.remove(
           "hidden"
         );
@@ -982,11 +986,13 @@ appConfig: null,
       const queryString = document.location.search.substring(1);
       const params = parseQueryString(queryString);
       file = params.get("file") ?? AppOptions.get("defaultUrl");
-      try {
-        file = new URL(file).href;
-      } catch {
-        file = encodeURIComponent(file).replaceAll("%2F", "/");
-      }
+      // Note that `parseQueryString` has already percent-decoded the parameter,
+      // hence it's used as-is below: re-encoding it would break URLs with e.g.
+      // a query string or a percent-encoded path (issue 20137).
+      // In a relative URL a "#" is assumed to be part of the filename, rather
+      // than a fragment separator, since the viewer takes its own hash
+      // parameters from the *viewer* URL (issue 19990).
+      file = URL.parse(file)?.href ?? file.replaceAll("#", "%23");
       validateFileURL(file);
     } else if (PDFJSDev.test("MOZCENTRAL")) {
       file = window.location.href;
@@ -1133,7 +1139,7 @@ appConfig: null,
     return this._initializedCapability.promise;
   },
 
-  updateZoom(steps, scaleFactor, origin) {
+  updateZoom(steps, scaleFactor, origin, pan = null) {
     if (this.pdfViewer.isInPresentationMode) {
       return;
     }
@@ -1143,6 +1149,7 @@ appConfig: null,
       steps,
       scaleFactor,
       origin,
+      pan,
     });
   },
 
@@ -1161,22 +1168,33 @@ appConfig: null,
     this.pdfViewer.currentScaleValue = DEFAULT_SCALE_VALUE;
   },
 
-  touchPinchCallback(origin, prevDistance, distance) {
+  touchPinchCallback(origin, prevDistance, distance, panX, panY) {
+    // A scale update which is a no-op, e.g. one rounded or clamped away, still
+    // applies the panning, hence there's nothing to special-case here.
+    const pan = [panX, panY];
     if (this.supportsPinchToZoom) {
       const newScaleFactor = this._accumulateFactor(
         this.pdfViewer.currentScale,
         distance / prevDistance,
         "_touchUnusedFactor"
       );
-      this.updateZoom(null, newScaleFactor, origin);
+      this.updateZoom(null, newScaleFactor, origin, pan);
     } else {
       const PIXELS_PER_LINE_SCALE = 30;
       const ticks = this._accumulateTicks(
         (distance - prevDistance) / PIXELS_PER_LINE_SCALE,
         "_touchUnusedTicks"
       );
-      this.updateZoom(ticks, null, origin);
+      this.updateZoom(ticks, null, origin, pan);
     }
+  },
+
+  touchPanCallback(dx, dy) {
+    const { pdfViewer } = this;
+    if (!this.pdfDocument || pdfViewer.isInPresentationMode) {
+      return;
+    }
+    pdfViewer.panBy(dx, dy);
   },
 
   touchPinchEndCallback() {
@@ -2192,7 +2210,7 @@ appConfig: null,
       NgxConsole.warn("Warning: JavaScript support is not enabled");
 
       // Hack to support auto printing.
-      for (const name in jsActions) {
+      for (const [name, actions] of jsActions) {
         if (triggerAutoPrint) {
           break;
         }
@@ -2204,7 +2222,7 @@ appConfig: null,
           case "DidPrint":
             continue;
         }
-        triggerAutoPrint = jsActions[name].some(js => AutoPrintRegExp.test(js));
+        triggerAutoPrint = actions.some(js => AutoPrintRegExp.test(js));
       }
     }
 
@@ -2909,6 +2927,7 @@ appConfig: null,
       isPinchingStopped: () => this.overlayManager?.active,
       onPinching: this.touchPinchCallback.bind(this),
       onPinchEnd: this.touchPinchEndCallback.bind(this),
+      onPanning: this.touchPanCallback.bind(this),
       signal,
     });
 
@@ -3102,7 +3121,7 @@ appConfig: null,
     this.pdfViewer.onPagesEdited(data);
   },
 
-  async onSavePages({ data: extractParams }) {
+  async onSavePages({ data: { pageInfos, copyLevels } }) {
     if (typeof PDFJSDev !== "undefined" && PDFJSDev.test("TESTING")) {
       return;
     }
@@ -3112,7 +3131,10 @@ appConfig: null,
     if (!this.pdfDocument) {
       return;
     }
-    const modifiedPdfBytes = await this.pdfDocument.extractPages(extractParams);
+    const modifiedPdfBytes = await this.pdfDocument.extractPages(
+      pageInfos,
+      copyLevels
+    );
     if (!modifiedPdfBytes) {
       console.error(
         "Something wrong happened when saving the edited PDF.\nPlease file a bug."
@@ -3126,11 +3148,14 @@ appConfig: null,
     );
   },
 
-  async onSaveAndLoad({ data: extractParams }) {
+  async onSaveAndLoad({ data: { pageInfos, copyLevels } }) {
     if (!this.pdfDocument) {
       return;
     }
-    const modifiedPdfBytes = await this.pdfDocument.extractPages(extractParams);
+    const modifiedPdfBytes = await this.pdfDocument.extractPages(
+      pageInfos,
+      copyLevels
+    );
     if (!modifiedPdfBytes) {
       console.error(
         "Something wrong happened when saving the edited PDF.\nPlease file a bug."
@@ -3160,21 +3185,27 @@ appConfig: null,
     if (factor === 1) {
       return 1;
     }
-    // If the direction changed, reset the accumulated factor.
-    if ((this[prop] > 1 && factor < 1) || (this[prop] < 1 && factor > 1)) {
-      this[prop] = 1;
-    }
-
+    // Carry scale-rounding error into the next factor.
+    // #367 modified by ngx-extended-pdf-viewer
+    // Upstream clamps to the built-in MIN_SCALE/MAX_SCALE; honour the
+    // viewer's configurable limits instead, otherwise a maxZoom above
+    // MAX_SCALE (or a minZoom below MIN_SCALE) is capped here before
+    // pdf_viewer.js ever sees it.
+    const target = MathClamp(
+      previousScale * factor * this[prop],
+      this.pdfViewer?.minZoom ?? MIN_SCALE,
+      this.pdfViewer?.maxZoom ?? MAX_SCALE
+    );
+    // #367 end of modification by ngx-extended-pdf-viewer
     // #3069 modified by ngx-extended-pdf-viewer
-    // Use 0.1% precision (1000) during pinch for smoother increments.
-    // The scale snaps to whole percentages when the gesture ends.
-    const newFactor =
-      Math.floor(previousScale * factor * this[prop] * 1000) /
-      (1000 * previousScale);
+    // Use 0.1% precision for smoother pinch increments; upstream rounds to
+    // whole percent here. The scale snaps to whole percentages when the
+    // gesture ends (see #setScale in pdf_viewer.js).
+    const newScale = Math.floor(target * 1000) / 1000;
     // #3069 end of modification by ngx-extended-pdf-viewer
-    this[prop] = factor / newFactor;
+    this[prop] = target / newScale;
 
-    return newFactor;
+    return newScale / previousScale;
   },
 
   /**

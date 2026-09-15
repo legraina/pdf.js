@@ -76,6 +76,7 @@ import { createImage } from "./editor/pdf_images.js";
 import { FileSpec } from "./file_spec.js";
 import { getSoundFormat } from "./sound.js";
 import { JpegStream } from "./jpeg_stream.js";
+import { MathClamp } from "../shared/math_clamp.js";
 import { ObjectLoader } from "./object_loader.js";
 import { OperatorList } from "./operator_list.js";
 import { parseMarkedContentProps } from "./evaluator_utils.js";
@@ -695,6 +696,25 @@ function getTransformMatrix(rect, bbox, matrix) {
   ];
 }
 
+function writeLineToCurveToAppearance(data, buffer, maybeClose = false) {
+  buffer.push(`${numberToString(data[4])} ${numberToString(data[5])} m`);
+
+  for (let i = 6, ii = data.length; i < ii; i += 6) {
+    if (isNaN(data[i])) {
+      buffer.push(
+        `${numberToString(data[i + 4])} ${numberToString(data[i + 5])} l`
+      );
+    } else {
+      const curve = /* [c1x, c1y, c2x, c2y, x, y] = */ data.slice(i, i + 6);
+      buffer.push(`${curve.map(numberToString).join(" ")} c`);
+    }
+  }
+
+  if (maybeClose && data.length === 6) {
+    buffer.push(`${numberToString(data[4])} ${numberToString(data[5])} l`);
+  }
+}
+
 class Annotation {
   appearance = null;
 
@@ -764,7 +784,8 @@ class Annotation {
 
       annotationGlobals.structTreeRoot.addAnnotationIdToPage(
         params.pageRef,
-        structParent
+        structParent,
+        this.ref
       );
     }
 
@@ -2611,6 +2632,21 @@ class WidgetAnnotation extends Annotation {
     );
     const alignment = this.data.textAlignment;
 
+    let { ascent: fontAscent, descent: fontDescent } = font;
+    if (
+      isNaN(fontAscent) ||
+      isNaN(fontDescent) ||
+      (!fontAscent && !fontDescent)
+    ) {
+      fontAscent = LINE_FACTOR - LINE_DESCENT_FACTOR;
+      fontDescent = LINE_DESCENT_FACTOR;
+    } else {
+      fontDescent = Math.abs(fontDescent);
+    }
+    const vShift =
+      (totalHeight - (fontAscent + fontDescent) * fontSize) / 2 +
+      fontDescent * fontSize;
+
     if (this.data.multiLine) {
       return this._getMultilineAppearance(
         defaultAppearance,
@@ -2635,14 +2671,14 @@ class WidgetAnnotation extends Annotation {
         encodedLines[0],
         fontSize,
         totalWidth,
-        totalHeight,
+        vShift,
         alignment,
         bidi(lines[0]).dir === "rtl",
         annotationStorage
       );
     }
 
-    const bottomPadding = defaultVPadding + descent;
+    const bottomPadding = vShift;
     if (alignment === 0 || alignment > 2) {
       // Left alignment: nothing to do
       return (
@@ -2914,10 +2950,7 @@ class TextWidgetAnnotation extends WidgetAnnotation {
     this.data.doNotScroll = this.hasFieldFlag(AnnotationFieldFlag.DONOTSCROLL);
 
     // Check if we have a date or time.
-    const {
-      data: { actions },
-    } = this;
-
+    const { actions } = this.data;
     if (!actions) {
       return;
     }
@@ -2925,32 +2958,35 @@ class TextWidgetAnnotation extends WidgetAnnotation {
     const AFDateTime =
       /^AF(Date|Time)_(?:Keystroke|Format)(?:Ex)?\(['"]?([^'"]+)['"]?\);$/;
     let canUseHTMLDateTime = false;
+
+    const aFormat = actions.get("Format"),
+      aKeystroke = actions.get("Keystroke");
     if (
-      (actions.Format?.length === 1 &&
-        actions.Keystroke?.length === 1 &&
-        AFDateTime.test(actions.Format[0]) &&
-        AFDateTime.test(actions.Keystroke[0])) ||
-      (actions.Format?.length === 0 &&
-        actions.Keystroke?.length === 1 &&
-        AFDateTime.test(actions.Keystroke[0])) ||
-      (actions.Keystroke?.length === 0 &&
-        actions.Format?.length === 1 &&
-        AFDateTime.test(actions.Format[0]))
+      (aFormat?.length === 1 &&
+        aKeystroke?.length === 1 &&
+        AFDateTime.test(aFormat[0]) &&
+        AFDateTime.test(aKeystroke[0])) ||
+      (aFormat?.length === 0 &&
+        aKeystroke?.length === 1 &&
+        AFDateTime.test(aKeystroke[0])) ||
+      (aKeystroke?.length === 0 &&
+        aFormat?.length === 1 &&
+        AFDateTime.test(aFormat[0]))
     ) {
       // If the Format and Keystroke actions are the same, we can just use
       // the Format action.
       canUseHTMLDateTime = true;
     }
     const actionsToVisit = [];
-    if (actions.Format) {
-      actionsToVisit.push(...actions.Format);
+    if (aFormat) {
+      actionsToVisit.push(...aFormat);
     }
-    if (actions.Keystroke) {
-      actionsToVisit.push(...actions.Keystroke);
+    if (aKeystroke) {
+      actionsToVisit.push(...aKeystroke);
     }
     if (canUseHTMLDateTime) {
-      delete actions.Keystroke;
-      actions.Format = actionsToVisit;
+      actions.delete("Keystroke");
+      actions.set("Format", actionsToVisit);
     }
 
     for (const formatAction of actionsToVisit) {
@@ -2996,7 +3032,7 @@ class TextWidgetAnnotation extends WidgetAnnotation {
     text,
     fontSize,
     width,
-    height,
+    vShift,
     alignment,
     isRTL,
     annotationStorage
@@ -3033,12 +3069,6 @@ class TextWidgetAnnotation extends WidgetAnnotation {
       previousWidth = glyphWidth;
     }
     const renderedComb = buf.join(" ");
-
-    // Vertically center the glyphs within the field: comb fields are mostly
-    // filled with uppercase letters and/or digits, hence we use the cap height
-    // (with a fallback on the ascent or the font size) to center them.
-    const vShift =
-      (height - (font.capHeight || font.ascent || 1) * fontSize) / 2;
 
     return (
       `/Tx BMC q ${colors}BT ` +
@@ -4084,10 +4114,7 @@ class ChoiceWidgetAnnotation extends WidgetAnnotation {
       const minIndex = Math.min(...valueIndices);
       const maxIndex = Math.max(...valueIndices);
 
-      firstIndex = Math.max(0, maxIndex - numberOfVisibleLines + 1);
-      if (firstIndex > minIndex) {
-        firstIndex = minIndex;
-      }
+      firstIndex = MathClamp(maxIndex - numberOfVisibleLines + 1, 0, minIndex);
     }
     const end = Math.min(firstIndex + numberOfVisibleLines + 1, lineCount);
 
@@ -4973,28 +5000,11 @@ class InkAnnotation extends MarkupAnnotation {
     }
 
     for (const outline of paths.lines) {
-      appearanceBuffer.push(
-        `${numberToString(outline[4])} ${numberToString(outline[5])} m`
+      writeLineToCurveToAppearance(
+        outline,
+        appearanceBuffer,
+        /* maybeClose = */ true
       );
-      for (let i = 6, ii = outline.length; i < ii; i += 6) {
-        if (isNaN(outline[i])) {
-          appearanceBuffer.push(
-            `${numberToString(outline[i + 4])} ${numberToString(
-              outline[i + 5]
-            )} l`
-          );
-        } else {
-          const [c1x, c1y, c2x, c2y, x, y] = outline.slice(i, i + 6);
-          appearanceBuffer.push(
-            [c1x, c1y, c2x, c2y, x, y].map(numberToString).join(" ") + " c"
-          );
-        }
-      }
-      if (outline.length === 6) {
-        appearanceBuffer.push(
-          `${numberToString(outline[4])} ${numberToString(outline[5])} l`
-        );
-      }
     }
     appearanceBuffer.push("S");
 
@@ -5036,23 +5046,7 @@ class InkAnnotation extends MarkupAnnotation {
       "/R0 gs",
     ];
 
-    appearanceBuffer.push(
-      `${numberToString(outline[4])} ${numberToString(outline[5])} m`
-    );
-    for (let i = 6, ii = outline.length; i < ii; i += 6) {
-      if (isNaN(outline[i])) {
-        appearanceBuffer.push(
-          `${numberToString(outline[i + 4])} ${numberToString(
-            outline[i + 5]
-          )} l`
-        );
-      } else {
-        const [c1x, c1y, c2x, c2y, x, y] = outline.slice(i, i + 6);
-        appearanceBuffer.push(
-          [c1x, c1y, c2x, c2y, x, y].map(numberToString).join(" ") + " c"
-        );
-      }
-    }
+    writeLineToCurveToAppearance(outline, appearanceBuffer);
     appearanceBuffer.push("h f");
     const appearance = appearanceBuffer.join("\n");
 
@@ -5402,26 +5396,11 @@ class StampAnnotation extends MarkupAnnotation {
     ];
 
     for (const line of lines) {
-      appearanceBuffer.push(
-        `${numberToString(line[4])} ${numberToString(line[5])} m`
+      writeLineToCurveToAppearance(
+        line,
+        appearanceBuffer,
+        /* maybeClose = */ true
       );
-      for (let i = 6, ii = line.length; i < ii; i += 6) {
-        if (isNaN(line[i])) {
-          appearanceBuffer.push(
-            `${numberToString(line[i + 4])} ${numberToString(line[i + 5])} l`
-          );
-        } else {
-          const [c1x, c1y, c2x, c2y, x, y] = line.slice(i, i + 6);
-          appearanceBuffer.push(
-            [c1x, c1y, c2x, c2y, x, y].map(numberToString).join(" ") + " c"
-          );
-        }
-      }
-      if (line.length === 6) {
-        appearanceBuffer.push(
-          `${numberToString(line[4])} ${numberToString(line[5])} l`
-        );
-      }
     }
     appearanceBuffer.push(areContours ? "F" : "S");
 

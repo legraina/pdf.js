@@ -66,10 +66,6 @@ const EXECUTION_STEPS = 10;
 
 const FULL_CHUNK_HEIGHT = 16;
 
-// Only used in rescaleAndStroke. The goal is to avoid
-// creating a new DOMMatrix object each time we need it.
-const SCALE_MATRIX = new DOMMatrix();
-
 // Used to get some coordinates.
 const XY = new Float32Array(2);
 
@@ -496,6 +492,10 @@ const NORMAL_CLIP = {};
 const EO_CLIP = {};
 
 class CanvasGraphics {
+  // Only used in rescaleAndStroke. The goal is to avoid
+  // creating a new DOMMatrix object each time we need it.
+  static #SCALE_MATRIX = null;
+
   // Knockout group support fields.
   #knockoutGroupLevel = 0;
 
@@ -2960,7 +2960,7 @@ class CanvasGraphics {
       }
 
       const spacing = (glyph.isSpace ? wordSpacing : 0) + charSpacing;
-      const operatorList = font.charProcOperatorList[glyph.operatorListId];
+      const operatorList = font.charProcOperatorList.get(glyph.operatorListId);
       if (!operatorList) {
         warn(`Type3 character "${glyph.operatorListId}" is not available.`);
       } else if (this.contentVisible) {
@@ -3704,11 +3704,6 @@ class CanvasGraphics {
         transform[4] -= rect[0];
         transform[5] -= rect[1];
 
-        rect = rect.slice();
-        rect[0] = rect[1] = 0;
-        rect[2] = width;
-        rect[3] = height;
-
         Util.singularValueDecompose2dScale(getCurrentTransform(this.ctx), XY);
         const { viewportScale } = this;
         const canvasWidth = Math.ceil(
@@ -4320,6 +4315,7 @@ class CanvasGraphics {
       ctx.stroke(path);
       return;
     }
+    const SCALE_MATRIX = (CanvasGraphics.#SCALE_MATRIX ??= new DOMMatrix());
 
     const dashes = ctx.getLineDash();
     if (saveRestore) {

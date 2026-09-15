@@ -658,8 +658,6 @@ class AnnotationEditor {
     style.top = `${(100 * y).toFixed(2)}%`;
 
     this._onTranslating(x, y);
-
-    div.scrollIntoView({ block: "nearest" });
   }
 
   /**
@@ -1552,16 +1550,7 @@ class AnnotationEditor {
 
     bindEvents(this, div, ["keydown", "pointerdown", "dblclick"]);
 
-    if (this.isResizable && this._uiManager._supportsPinchToZoom) {
-      this.#touchManager ||= new TouchManager({
-        container: div,
-        isPinchingDisabled: () => !this.isSelected,
-        onPinchStart: this.#touchPinchStartCallback.bind(this),
-        onPinching: this.#touchPinchCallback.bind(this),
-        onPinchEnd: this.#touchPinchEndCallback.bind(this),
-        signal: this._uiManager._signal,
-      });
-    }
+    this.#addTouchManager();
 
     this.addStandaloneCommentButton();
     this._uiManager._editorUndoBar?.hide();
@@ -1723,6 +1712,11 @@ class AnnotationEditor {
           this.#prevDragX = x;
           this.#prevDragY = y;
           this._uiManager.dragSelectedEditors(tx, ty);
+          // Keep the editor where the drag started in view. Calling
+          // `scrollIntoView` here does it once per handled pointermove, after
+          // `dragSelectedEditors` has moved the selection, rather than once
+          // from every selected editor's `drag` method.
+          this.div.scrollIntoView({ block: "nearest" });
         },
         opts
       );
@@ -2023,6 +2017,25 @@ class AnnotationEditor {
     this.div.addEventListener("focusout", this.focusout.bind(this), { signal });
   }
 
+  #addTouchManager() {
+    if (
+      this.#touchManager ||
+      !this.div ||
+      !this.isResizable ||
+      !this._uiManager._supportsPinchToZoom
+    ) {
+      return;
+    }
+    this.#touchManager = new TouchManager({
+      container: this.div,
+      isPinchingDisabled: () => !this.isSelected,
+      onPinchStart: this.#touchPinchStartCallback.bind(this),
+      onPinching: this.#touchPinchCallback.bind(this),
+      onPinchEnd: this.#touchPinchEndCallback.bind(this),
+      signal: this._uiManager._signal,
+    });
+  }
+
   /**
    * Rebuild the editor in case it has been removed on undo.
    *
@@ -2030,6 +2043,7 @@ class AnnotationEditor {
    */
   rebuild() {
     this.#addFocusListeners();
+    this.#addTouchManager();
   }
 
   /**
@@ -2147,6 +2161,11 @@ class AnnotationEditor {
       // undo/redo so we must commit it before.
       this.commit();
     }
+    // End an active pinch before detaching: its callback uses `parent` and
+    // records the resize.
+    this.#touchManager?.destroy();
+    this.#touchManager = null;
+
     if (this.parent) {
       this.parent.remove(this);
     } else {
@@ -2178,8 +2197,6 @@ class AnnotationEditor {
       value: this,
     });
     // #2256 end of modification by ngx-extended-pdf-viewer
-    this.#touchManager?.destroy();
-    this.#touchManager = null;
     this.#fakeAnnotation?.remove();
     this.#fakeAnnotation = null;
   }
@@ -2201,6 +2218,9 @@ class AnnotationEditor {
     }
   }
 
+  /**
+   * @returns {Array<number>|null}
+   */
   get toolbarPosition() {
     return null;
   }

@@ -519,34 +519,18 @@ class AnnotationEditorLayer {
         true,
         /* updateButton = */ true
       );
-      this.#textLayer.div.classList.add("free");
-      this.toggleDrawing();
       // #3136 modified by ngx-extended-pdf-viewer
-      this.eventBus?.dispatch("annotation-editor-event", {
-        source: this,
-        type: "drawingStarted",
-        editorType: "HighlightEditor",
-      });
+      // Upstream (PR 21769) moved the "free" class, toggleDrawing() and the
+      // pointerup teardown into HighlightEditor._getDrawingTarget /
+      // DrawingEditor; the drawingStarted / drawingStopped events are
+      // dispatched from DrawingEditor._dispatchDrawingEvent, which reports the
+      // same editorType. Nothing to duplicate here any more.
       // #3136 end of modification by ngx-extended-pdf-viewer
-      HighlightEditor.startHighlighting(
+      HighlightEditor.startDrawing(
         this,
+        this.#uiManager,
         this.#uiManager.direction === "ltr",
-        { target: this.#textLayer.div, x: event.x, y: event.y }
-      );
-      this.#textLayer.div.addEventListener(
-        "pointerup",
-        () => {
-          this.#textLayer.div.classList.remove("free");
-          this.toggleDrawing(true);
-          // #3136 modified by ngx-extended-pdf-viewer
-          this.eventBus?.dispatch("annotation-editor-event", {
-            source: this,
-            type: "drawingStopped",
-            editorType: "HighlightEditor",
-          });
-          // #3136 end of modification by ngx-extended-pdf-viewer
-        },
-        { once: true, signal: this.#uiManager._signal }
+        event
       );
       event.preventDefault();
     }

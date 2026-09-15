@@ -71,14 +71,16 @@ function getInlineImageCacheKey(bytes) {
 }
 
 class Parser {
+  #imageCache = null;
+
+  #imageId = 0;
+
   constructor({ lexer, xref, allowStreams = false, recoveryMode = false }) {
     this.lexer = lexer;
     this.xref = xref;
     this.allowStreams = allowStreams;
     this.recoveryMode = recoveryMode;
 
-    this.imageCache = Object.create(null);
-    this._imageId = 0;
     this.refill();
   }
 
@@ -186,10 +188,7 @@ class Parser {
     }
 
     if (typeof buf1 === "string") {
-      if (cipherTransform) {
-        return cipherTransform.decryptString(buf1);
-      }
-      return buf1;
+      return cipherTransform ? cipherTransform.decryptString(buf1) : buf1;
     }
 
     // simple object
@@ -539,9 +538,7 @@ class Parser {
     const lexer = this.lexer;
     const stream = lexer.stream;
 
-    // Parse dictionary, but initialize it lazily to improve performance with
-    // cached inline images (see issue 2618).
-    const dictMap = Object.create(null);
+    const dict = new Dict(this.xref);
     let dictLength;
     while (!isCmd(this.buf1, "ID") && this.buf1 !== EOF) {
       if (!(this.buf1 instanceof Name)) {
@@ -552,14 +549,14 @@ class Parser {
       if (this.buf1 === EOF) {
         break;
       }
-      dictMap[key] = this.getObj(cipherTransform);
+      dict.set(key, this.getObj(cipherTransform));
     }
     if (lexer.beginInlineImagePos !== -1) {
       dictLength = stream.pos - lexer.beginInlineImagePos;
     }
 
     // Extract the name of the first (i.e. the current) image filter.
-    const filter = this.#fetchIfRef(dictMap.F || dictMap.Filter);
+    const filter = dict.get("F", "Filter");
     let filterName;
     if (filter instanceof Name) {
       filterName = filter.name;
@@ -602,8 +599,8 @@ class Parser {
       // Finally, don't forget to reset the stream position.
       stream.pos = initialStreamPos;
 
-      const cacheEntry = this.imageCache[cacheKey];
-      if (cacheEntry !== undefined) {
+      const cacheEntry = this.#imageCache?.get(cacheKey);
+      if (cacheEntry) {
         this.buf2 = Cmd.get("EI");
         this.shift();
 
@@ -612,10 +609,6 @@ class Parser {
       }
     }
 
-    const dict = new Dict(this.xref);
-    for (const key in dictMap) {
-      dict.set(key, dictMap[key]);
-    }
     let imageStream = stream.makeSubStream(startPos, length, dict);
     if (cipherTransform && !this.#hasCryptFilter(filter)) {
       imageStream = cipherTransform.createStream(imageStream, length);
@@ -623,9 +616,9 @@ class Parser {
 
     imageStream = this.filter(imageStream, dict, length, cipherTransform);
     imageStream.dict = dict;
-    if (cacheKey !== undefined) {
-      imageStream.cacheKey = `inline_img_${++this._imageId}`;
-      this.imageCache[cacheKey] = imageStream;
+    if (cacheKey) {
+      imageStream.cacheKey = `inline_img_${++this.#imageId}`;
+      (this.#imageCache ??= new Map()).set(cacheKey, imageStream);
     }
 
     this.buf2 = Cmd.get("EI");
@@ -653,17 +646,9 @@ class Parser {
    *   Whether the filter chain contains `/Crypt`.
    */
   #hasCryptFilter(filter) {
-    if (!Array.isArray(filter)) {
-      return isName(filter, "Crypt");
-    }
-
-    for (const f of filter) {
-      if (isName(this.#fetchIfRef(f), "Crypt")) {
-        return true;
-      }
-    }
-
-    return false;
+    return Array.isArray(filter)
+      ? filter.some(f => isName(this.#fetchIfRef(f), "Crypt"))
+      : isName(filter, "Crypt");
   }
 
   #findStreamLength(startPos) {

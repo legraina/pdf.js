@@ -75,7 +75,7 @@ const TIMEZONE_OFFSET = new Date().getTimezoneOffset() * 60 * 1000;
  * @property {Object} svgFactory
  * @property {boolean} [enableScripting]
  * @property {boolean} [hasJSActions]
- * @property {Object} [fieldObjects]
+ * @property {Map} [fieldObjects]
  */
 
 class AnnotationElementFactory {
@@ -663,8 +663,8 @@ class AnnotationElement {
       return;
     }
 
-    const [rectBlX, rectBlY, rectTrX, rectTrY] = this.data.rect.map(x =>
-      Math.fround(x)
+    const [rectBlX, rectBlY, rectTrX, rectTrY] = this.data.rect.map(
+      Math.fround
     );
 
     if (quadPoints.length === 8) {
@@ -812,7 +812,7 @@ class AnnotationElement {
     const fields = [];
 
     if (this._fieldObjects) {
-      const fieldObj = this._fieldObjects[name] || [];
+      const fieldObj = this._fieldObjects.get(name) || [];
 
       for (const { page, id, exportValues } of fieldObj) {
         if (page === -1) {
@@ -1021,9 +1021,9 @@ class LinkAnnotationElement extends AnnotationElement {
     } else {
       if (
         data.actions &&
-        (data.actions.Action ||
-          data.actions["Mouse Up"] ||
-          data.actions["Mouse Down"]) &&
+        (data.actions.has("Action") ||
+          data.actions.has("Mouse Up") ||
+          data.actions.has("Mouse Down")) &&
         this.enableScripting &&
         this.hasJSActions
       ) {
@@ -1167,14 +1167,14 @@ class LinkAnnotationElement extends AnnotationElement {
    * @param {Object} data
    * @memberof LinkAnnotationElement
    */
-  _bindJSAction(link, data) {
+  _bindJSAction(link, { actions, id, overlaidText }) {
     link.href = this.linkService.getAnchorUrl("");
     const map = new Map([
       ["Action", "onclick"],
       ["Mouse Up", "onmouseup"],
       ["Mouse Down", "onmousedown"],
     ]);
-    for (const name of Object.keys(data.actions)) {
+    for (const name of actions.keys()) {
       const jsName = map.get(name);
       if (!jsName) {
         continue;
@@ -1182,16 +1182,13 @@ class LinkAnnotationElement extends AnnotationElement {
       link[jsName] = () => {
         this.linkService.eventBus?.dispatch("dispatcheventinsandbox", {
           source: this,
-          detail: {
-            id: data.id,
-            name,
-          },
+          detail: { id, name },
         });
         return false;
       };
     }
-    if (data.overlaidText) {
-      link.title = data.overlaidText;
+    if (overlaidText) {
+      link.title = overlaidText;
     }
     link.onclick ||= () => false;
 
@@ -1229,12 +1226,12 @@ class LinkAnnotationElement extends AnnotationElement {
       if (resetFormFields.length !== 0 || resetFormRefs.length !== 0) {
         const fieldIds = new Set(resetFormRefs);
         for (const fieldName of resetFormFields) {
-          const fields = this._fieldObjects[fieldName] || [];
+          const fields = this._fieldObjects.get(fieldName) || [];
           for (const { id } of fields) {
             fieldIds.add(id);
           }
         }
-        for (const fields of Object.values(this._fieldObjects)) {
+        for (const fields of this._fieldObjects.values()) {
           for (const field of fields) {
             if (fieldIds.has(field.id) === include) {
               allFields.push(field);
@@ -1242,7 +1239,7 @@ class LinkAnnotationElement extends AnnotationElement {
           }
         }
       } else {
-        for (const fields of Object.values(this._fieldObjects)) {
+        for (const fields of this._fieldObjects.values()) {
           allFields.push(...fields);
         }
       }
@@ -1401,8 +1398,10 @@ class WidgetAnnotationElement extends AnnotationElement {
   }
 
   _setEventListeners(element, elementData, names, getter) {
+    const { actions } = this.data;
+
     for (const [baseName, eventName] of names) {
-      if (eventName === "Action" || this.data.actions?.[eventName]) {
+      if (eventName === "Action" || actions?.has(eventName)) {
         if (eventName === "Focus" || eventName === "Blur") {
           elementData ||= { focused: false };
         }
@@ -1413,10 +1412,10 @@ class WidgetAnnotationElement extends AnnotationElement {
           eventName,
           getter
         );
-        if (eventName === "Focus" && !this.data.actions?.Blur) {
+        if (eventName === "Focus" && !actions?.has("Blur")) {
           // Ensure that elementData will have the correct value.
           this._setEventListener(element, elementData, "blur", "Blur", null);
-        } else if (eventName === "Blur" && !this.data.actions?.Focus) {
+        } else if (eventName === "Blur" && !actions?.has("Focus")) {
           this._setEventListener(element, elementData, "focus", "Focus", null);
         }
       }
@@ -1670,7 +1669,7 @@ class TextWidgetAnnotationElement extends WidgetAnnotationElement {
           }
           elementData.lastCommittedValue = target.value;
           elementData.commitKey = 1;
-          if (!this.data.actions?.Focus) {
+          if (!this.data.actions?.has("Focus")) {
             elementData.focused = true;
           }
         });
@@ -1806,7 +1805,7 @@ class TextWidgetAnnotationElement extends WidgetAnnotationElement {
             // #2545 end of modification by ngx-extended-pdf-viewer
             return;
           }
-          if (!this.data.actions?.Blur) {
+          if (!this.data.actions?.has("Blur")) {
             elementData.focused = false;
           }
           const { target } = event;
@@ -1854,7 +1853,7 @@ class TextWidgetAnnotationElement extends WidgetAnnotationElement {
           _blurListener(event);
         });
 
-        if (this.data.actions?.Keystroke) {
+        if (this.data.actions?.has("Keystroke")) {
           element.addEventListener("beforeinput", event => {
             elementData.lastCommittedValue = null;
             const { data, target } = event;
@@ -1866,11 +1865,21 @@ class TextWidgetAnnotationElement extends WidgetAnnotationElement {
             switch (event.inputType) {
               // https://rawgit.com/w3c/input-events/v1/index.html#interface-InputEvent-Attributes
               case "deleteWordBackward": {
-                const match = value
-                  .substring(0, selectionStart)
-                  .match(/\w*\W*$/);
-                if (match) {
-                  selStart -= match[0].length;
+                // The previous unanchored regex could take quadratic time, so
+                // scan backwards over the trailing non-word characters and
+                // then the word.
+                const wordCharPattern = /\w/;
+                while (
+                  selStart > 0 &&
+                  !wordCharPattern.test(value[selStart - 1])
+                ) {
+                  selStart--;
+                }
+                while (
+                  selStart > 0 &&
+                  wordCharPattern.test(value[selStart - 1])
+                ) {
+                  selStart--;
                 }
                 break;
               }
@@ -3283,10 +3292,7 @@ class PopupElement {
   }
 
   get isVisible() {
-    if (this.#commentManager) {
-      return false;
-    }
-    return this.#container.hidden === false;
+    return !this.#commentManager && this.#container.hidden === false;
   }
 }
 
@@ -4107,7 +4113,7 @@ class MediaAnnotationElement extends AnnotationElement {
  * @property {boolean} [enableScripting] - Enable embedded script execution.
  * @property {boolean} [hasJSActions] - Some fields have JS actions.
  *   The default value is `false`.
- * @property {Object<string, Array<Object>> | null} [fieldObjects]
+ * @property {Map<string, Array<Object>> | null} [fieldObjects]
  * @property {Map<string, HTMLCanvasElement>} [annotationCanvasMap]
  * @property {TextAccessibilityManager} [accessibilityManager]
  * @property {AnnotationEditorUIManager} [annotationEditorUIManager]
@@ -4290,12 +4296,19 @@ class AnnotationLayer {
       this.#hasAriaAttributesFromStructTree = true;
       for (const {
         contentElement,
-        data: { id },
+        data: { hidden, id, oc },
       } of this.#elements) {
         const annotationId = (contentElement.id = `${AnnotationPrefix}${id}`);
+        // An unbound link has no <a>, hidden links aren't exposed, and
+        // optional-content visibility can change after this one-time setup.
+        // Keep the structure-tree Link fallback in all three cases; a visible
+        // optional-content link can therefore remain duplicated, matching the
+        // pre-existing behavior.
+        const enableLinkOwnership =
+          contentElement.localName === "a" && !hidden && !oc;
         promises.push(
           this.#structTreeLayer
-            ?.getAriaAttributes(annotationId)
+            ?.getAriaAttributes(annotationId, { enableLinkOwnership })
             .then(ariaAttributes => {
               if (ariaAttributes) {
                 for (const [key, value] of ariaAttributes) {
@@ -4366,9 +4379,14 @@ class AnnotationLayer {
     this.div.append(fragment);
     await Promise.all(promises);
     if (this.#accessibilityManager) {
-      for (const element of this.#elements) {
+      const annotationIds = await this.#structTreeLayer?.getAnnotationIds();
+      for (const { contentElement } of this.#elements) {
+        if (annotationIds?.has(contentElement.id)) {
+          // The structure tree already positions this annotation.
+          continue;
+        }
         this.#accessibilityManager.addPointerInTextLayer(
-          element.contentElement,
+          contentElement,
           /* isRemovable = */ false
         );
       }

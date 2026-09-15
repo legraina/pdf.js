@@ -700,6 +700,15 @@ class PDFDocumentProxy {
     this._pdfInfo = pdfInfo;
     this._transport = transport;
 
+    if (
+      typeof PDFJSDev === "undefined" ||
+      PDFJSDev.test("TESTING || INTERNAL_VIEWER")
+    ) {
+      // For the PDF debugger.
+      Object.defineProperty(this, "getRawData", {
+        value: data => this._transport.getRawData(data),
+      });
+    }
     if (typeof PDFJSDev === "undefined" || PDFJSDev.test("TESTING")) {
       // For testing purposes.
       Object.defineProperty(this, "getNetworkStreamName", {
@@ -890,8 +899,8 @@ class PDFDocumentProxy {
   }
 
   /**
-   * @returns {Promise<Object | null>} A promise that is resolved with
-   *   an {Object} with the JavaScript actions:
+   * @returns {Promise<Map | null>} A promise that is resolved with a {Map} with
+   *   the JavaScript actions:
    *     - from the name tree.
    *     - from A or AA entries in the catalog dictionary.
    *   , or `null` if no JavaScript exists.
@@ -947,9 +956,9 @@ class PDFDocumentProxy {
   }
 
   /**
-   * @returns {Promise<Array<number> | null>} A promise that is resolved with
-   *   an {Array} that contains the permission flags for the PDF document, or
-   *   `null` when no permissions are present in the PDF file.
+   * @returns {Promise<Set<number> | null>} A promise that is resolved with
+   *   a {Set} that contains the permission flags for the PDF document,
+   *   or `null` when no permissions are present in the PDF file.
    */
   getPermissions() {
     return this._transport.getPermissions();
@@ -1034,11 +1043,15 @@ class PDFDocumentProxy {
 
   /**
    * @param {Array<PageInfo>} pageInfos - The pages to extract.
+   * @param {Int32Array} [copyLevels] - For each viewer page, its rank among the
+   *  extracted pages sharing the same source page, or -1 if it isn't extracted.
+   *  This routes editor annotations when the viewer contains multiple copies
+   *  of a source page.
    * @returns {Promise<Uint8Array>} A promise that is resolved with a
    *   {Uint8Array} containing the full data of the saved document.
    */
-  extractPages(pageInfos) {
-    return this._transport.extractPages(pageInfos);
+  extractPages(pageInfos, copyLevels = null) {
+    return this._transport.extractPages(pageInfos, copyLevels);
   }
 
   /**
@@ -1048,10 +1061,6 @@ class PDFDocumentProxy {
    */
   getDownloadInfo() {
     return this._transport.downloadInfoCapability.promise;
-  }
-
-  getRawData(data) {
-    return this._transport.getRawData(data);
   }
 
   /**
@@ -1094,9 +1103,9 @@ class PDFDocumentProxy {
   }
 
   /**
-   * @returns {Promise<Object<string, Array<Object>> | null>} A promise that is
-   *   resolved with an {Object} containing /AcroForm field data for the JS
-   *   sandbox, or `null` when no field data is present in the PDF file.
+   * @returns {Promise<Map<string, Array<Object>> | null>} A promise that is
+   *   resolved with a {Map} containing /AcroForm field data for the JS sandbox,
+   *   or `null` when no field data is present in the PDF file.
    */
   getFieldObjects() {
     return this._transport.getFieldObjects();
@@ -1317,6 +1326,18 @@ class PDFDocumentProxy {
  *   {@link StructTreeNode} and {@link StructTreeContent} objects.
  * @property {string} role - element's role, already mapped if a role map exists
  * in the PDF.
+ * @property {string} [structId] - A table header's structure element
+ *   identifier, i.e. its `ID` entry. Note that this is unrelated to the `id`
+ *   property of a {@link StructTreeContent} object.
+ * @property {number} [rowSpan] - The number of rows spanned by a table cell.
+ * @property {number} [colSpan] - The number of columns spanned by a table cell.
+ * @property {Array<string>} [headers] - The `structId` values of the table
+ *   headers associated with a table cell.
+ * @property {"Row" | "Column" | "Both"} [scope] - The cells to which a table
+ *   header applies.
+ * @property {string} [short] - An abbreviated version of a table header's
+ *   content.
+ * @property {string} [summary] - A summary of a table's purpose and structure.
  */
 
 /**
@@ -1454,8 +1475,8 @@ class PDFPageProxy {
   }
 
   /**
-   * @returns {Promise<Object>} A promise that is resolved with an
-   *   {Object} with JS actions.
+   * @returns {Promise<Map | null>} A promise that is resolved with a {Map} with
+   *   the JavaScript actions, or `null` if no JavaScript exists.
    */
   getJSActions() {
     return this._transport.getPageJSActions(this._pageIndex);
@@ -2489,6 +2510,15 @@ class WorkerTransport {
 
     this.setupMessageHandler();
 
+    if (
+      typeof PDFJSDev === "undefined" ||
+      PDFJSDev.test("TESTING || INTERNAL_VIEWER")
+    ) {
+      // For the PDF debugger.
+      Object.defineProperty(this, "getRawData", {
+        value: data => this.messageHandler.sendWithPromise("GetRawData", data),
+      });
+    }
     if (typeof PDFJSDev === "undefined" || PDFJSDev.test("TESTING")) {
       // For testing purposes.
       Object.defineProperty(this, "getNetworkStreamName", {
@@ -2986,7 +3016,7 @@ class WorkerTransport {
   }
   // #2943 end of modification by ngx-extended-pdf-viewer
 
-  extractPages(pageInfos) {
+  extractPages(pageInfos, copyLevels = null) {
     const params = {
       pageInfos,
     };
@@ -3013,6 +3043,8 @@ class WorkerTransport {
       // Annotation pageIndex tracks the editor's current viewer position; the
       // worker keys lookups by source index. Remap UI -> source via pagesMapper
       // so reorganized pages still receive their annotations after extraction.
+      // Multiple viewer pages can share a source page. The copy level routes
+      // each editor annotation to the corresponding extracted copy.
       const mapping = this.pagesMapper.getMapping();
       if (mapping) {
         const remapped = new Map();
@@ -3022,9 +3054,13 @@ class WorkerTransport {
             v.pageIndex >= 0 &&
             v.pageIndex < mapping.length
           ) {
+            // copyLevels uses -1 for non-extracted pages. Keep their entries
+            // because an extracted stamp may share their bitmapId; the worker
+            // uses the negative level to skip the annotation itself.
+            const copyLevel = copyLevels?.[v.pageIndex] ?? 0;
             const sourceIdx = mapping[v.pageIndex] - 1;
-            if (sourceIdx !== v.pageIndex) {
-              remapped.set(k, { ...v, pageIndex: sourceIdx });
+            if (sourceIdx !== v.pageIndex || copyLevel !== 0) {
+              remapped.set(k, { ...v, pageIndex: sourceIdx, copyLevel });
               continue;
             }
           }
@@ -3230,10 +3266,6 @@ class WorkerTransport {
 
   getMarkInfo() {
     return this.messageHandler.sendWithPromise("GetMarkInfo", null);
-  }
-
-  getRawData(data) {
-    return this.messageHandler.sendWithPromise("GetRawData", data);
   }
 
   async startCleanup(keepLoadedFonts = false) {

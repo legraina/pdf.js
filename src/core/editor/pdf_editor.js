@@ -33,8 +33,8 @@ import {
   isName,
   Name,
   Ref,
+  RefMap,
   RefSet,
-  RefSetCache,
 } from "../primitives.js";
 import { incrementalUpdate, writeValue } from "../writer.js";
 import { isArrayEqual, makeArr, stringToBytes } from "../../shared/util.js";
@@ -57,6 +57,8 @@ class PageData {
     this.annotations = null;
     // Named destinations which points to this page.
     this.pointingNamedDestinations = null;
+    // Rank of this page among the output pages sharing the same source page.
+    this.copyLevel = 0;
 
     documentData.pagesMap.put(page.ref, this);
   }
@@ -67,11 +69,11 @@ class DocumentData {
     this.document = document;
     this.destinations = null;
     this.pageLabels = null;
-    this.pagesMap = new RefSetCache();
-    this.oldRefMapping = new RefSetCache();
+    this.pagesMap = new RefMap();
+    this.oldRefMapping = new RefMap();
     this.dedupNamedDestinations = new Map();
     this.usedNamedDestinations = new Set();
-    this.postponedRefCopies = new RefSetCache();
+    this.postponedRefCopies = new RefMap();
     this.resourceStreamPromises = new Map();
     this.usedStructParents = new Set();
     this.oldStructParentMapping = new Map();
@@ -88,7 +90,7 @@ class DocumentData {
     this.acroFormDefaultResources = null;
     this.acroFormQ = 0;
     this.hasSignatureAnnotations = false;
-    this.fieldToParent = new RefSetCache();
+    this.fieldToParent = new RefMap();
     this.outline = null;
     this.embeddedFiles = null;
   }
@@ -263,7 +265,7 @@ class PDFEditor {
   ) {
     if (obj instanceof Ref) {
       const {
-        currentDocument: { oldRefMapping },
+        currentDocument: { fieldToParent, oldRefMapping },
       } = this;
       const existingRef = oldRefMapping.get(obj);
       if (existingRef) {
@@ -271,6 +273,12 @@ class PDFEditor {
       }
       const oldRef = obj;
       obj = await xref.fetchAsync(oldRef);
+      const mappedRef = oldRefMapping.get(oldRef);
+      if (mappedRef) {
+        // Another concurrent traversal may have allocated the clone while the
+        // source object was being fetched.
+        return mappedRef;
+      }
       if (typeof obj === "number") {
         // Simple value; no need to create a new reference.
         return obj;
@@ -299,9 +307,17 @@ class PDFEditor {
         }
       }
 
+      let cloneSource = true;
+      if (fieldToParent.has(oldRef) && obj instanceof Dict) {
+        // Avoid following a widget's field hierarchy while cloning the page,
+        // without mutating the source dictionary cached by its XRef.
+        obj = this.cloneDict(obj);
+        obj.delete("Parent");
+        cloneSource = false;
+      }
       this.xref[newRef.num] = await this.#collectDependencies(
         obj,
-        true,
+        cloneSource,
         xref,
         resourceStreamPath
       );
@@ -981,13 +997,6 @@ class PDFEditor {
       // async.
       this.oldPages[newPageIndex] = null;
     };
-    // Image entries don't carry document identity, so ignore them when
-    // deciding whether we're operating on a single source PDF.
-    const docPageInfos = pageInfos.filter(info => !!info.document);
-    this.isSingleFile =
-      docPageInfos.length === 1 ||
-      (docPageInfos.length > 0 &&
-        docPageInfos.every(info => info.document === docPageInfos[0].document));
     const allDocumentData = [];
 
     if (annotationStorage) {
@@ -1083,11 +1092,25 @@ class PDFEditor {
       }
     }
     await Promise.all(promises);
+    if (this.oldPages.length === 0) {
+      throw new Error("extractPages: nothing to extract.");
+    }
+    const copyCounts = new Map();
+    const documents = new Set();
     for (let i = 0, ii = this.oldPages.length; i < ii; i++) {
-      if (this.oldPages[i] === undefined) {
+      const pageData = this.oldPages[i];
+      if (pageData === undefined) {
         throw new Error("extractPages: sparse pageIndices.");
       }
+      if (pageData) {
+        const { page } = pageData;
+        const copyLevel = copyCounts.get(page) ?? 0;
+        copyCounts.set(page, copyLevel + 1);
+        pageData.copyLevel = copyLevel;
+        documents.add(pageData.documentData.document);
+      }
     }
+    this.isSingleFile = documents.size === 1;
     promises.length = 0;
 
     this.#collectValidDestinations(allDocumentData);
@@ -1223,11 +1246,8 @@ class PDFEditor {
                 "Sig"
               );
               const parentRef = annotationDict.getRaw("Parent") || null;
-              // We remove the parent to avoid visiting it when cloning the
-              // annotation.
-              // It'll be fixed later in #mergeAcroForms when merging the
-              // AcroForms.
-              annotationDict.delete("Parent");
+              // The parent will be omitted from the annotation clone to avoid
+              // visiting it, then restored by #mergeAcroForms.
               fieldToParent.put(annotationRef, parentRef);
             }
 
@@ -1271,7 +1291,7 @@ class PDFEditor {
     }
 
     await Promise.all(promises);
-    newAnnotations = newAnnotations.filter(annot => !!annot);
+    newAnnotations = newAnnotations.filter(Boolean);
     pageData.annotations = newAnnotations.length > 0 ? newAnnotations : null;
     pageData.documentData.hasSignatureAnnotations ||= hasSignatureAnnotations;
   }
@@ -2122,7 +2142,7 @@ class PDFEditor {
    * If the document has some fields but no Fields entry in the AcroForm, we
    * need to fix that by creating a Fields entry with the oldest parent field
    * for each field.
-   * @param {RefSetCache} fieldToParent
+   * @param {RefMap} fieldToParent
    * @param {XRef} xref
    * @returns {Array<Ref>}
    */
@@ -2136,8 +2156,20 @@ class PDFEditor {
       }
       let parent = parentRef;
       let lastNonNullParent = parentRef;
+      const visited = new RefSet();
       while (true) {
-        parent = xref.fetchIfRef(parent)?.getRaw("Parent") || null;
+        if (parent instanceof Ref) {
+          if (visited.has(parent)) {
+            // Cyclic Parent chain: stop on the field closing the cycle.
+            break;
+          }
+          visited.put(parent);
+        }
+        const parentDict = xref.fetchIfRef(parent);
+        if (!(parentDict instanceof Dict)) {
+          break;
+        }
+        parent = parentDict.getRaw("Parent") || null;
         if (!parent) {
           break;
         }
@@ -2210,6 +2242,9 @@ class PDFEditor {
       }
       processed.put(oldKidRef);
       const kid = xref.fetchIfRef(oldKidRef);
+      if (!(kid instanceof Dict)) {
+        continue;
+      }
       if (kid.has("Kids")) {
         const kidsArray = kid.get("Kids");
         if (!Array.isArray(kidsArray)) {
@@ -2342,7 +2377,7 @@ class PDFEditor {
     const numPages = document.numPages;
     const labelsByPageIndex = new Map();
     const oldPageIndices = new Set(
-      this.oldPages.filter(p => !!p).map(({ page: { pageIndex } }) => pageIndex)
+      this.oldPages.filter(Boolean).map(({ page: { pageIndex } }) => pageIndex)
     );
     let currentLabel = null;
     let stFirstIndex = -1;
@@ -2387,12 +2422,18 @@ class PDFEditor {
 
   /**
    * Create a copy of a page.
-   * @param {number} pageIndex
+   * @param {number} pageIndex - Index of the page slot in the new document
+   *   (the index of the source page is `page.pageIndex`).
    * @returns {Promise<Ref>} the page reference in the new PDF document.
    */
   async #makePageCopy(pageIndex) {
-    const { page, documentData, annotations, pointingNamedDestinations } =
-      this.oldPages[pageIndex];
+    const {
+      page,
+      documentData,
+      annotations,
+      pointingNamedDestinations,
+      copyLevel,
+    } = this.oldPages[pageIndex];
     this.currentDocument = documentData;
     const { dedupNamedDestinations, oldRefMapping } = documentData;
     const { xref, rotate, mediaBox, resources, ref: oldPageRef } = page;
@@ -2461,13 +2502,15 @@ class PDFEditor {
 
     const newAnnotations =
       documentData.document === this.#primaryDocument
-        ? this.#newAnnotationsParams?.newAnnotationsByPage?.get(page.pageIndex)
+        ? this.#newAnnotationsParams?.newAnnotationsByPage
+            ?.get(page.pageIndex)
+            ?.filter(({ copyLevel: level }) => (level ?? 0) === copyLevel)
         : null;
-    if (newAnnotations) {
+    if (newAnnotations?.length) {
       const { handler, task, imagesPromises } = this.#newAnnotationsParams;
-      const changes = new RefSetCache();
+      const changes = new RefMap();
       const newData = await AnnotationFactory.saveNewAnnotations(
-        page.createAnnotationEvaluator(handler),
+        page._createPartialEvaluator(handler),
         this.xrefWrapper,
         task,
         newAnnotations,
@@ -2847,7 +2890,11 @@ class PDFEditor {
       const parentTree = this.xref[parentTreeRef.num];
       parentTree.setIfName("Type", "ParentTree");
       structTree.set("ParentTree", parentTreeRef);
-      structTree.set("ParentTreeNextKey", this.parentTree.size);
+      let nextKey = 0;
+      for (const key of this.parentTree.keys()) {
+        nextKey = Math.max(nextKey, key + 1);
+      }
+      structTree.set("ParentTreeNextKey", nextKey);
     }
     if (this.idTree.size > 0) {
       const idTreeRef = this.#makeNameNumTree(
@@ -3000,10 +3047,10 @@ class PDFEditor {
 
   /**
    * Create the changes required to write the new PDF document.
-   * @returns {Promise<[RefSetCache, Ref]>}
+   * @returns {Promise<[RefMap, Ref]>}
    */
   async #createChanges() {
-    const changes = new RefSetCache();
+    const changes = new RefMap();
     changes.put(Ref.get(0, 0xffff), { data: null });
     for (let i = 1, ii = this.xref.length; i < ii; i++) {
       if (this.objStreamRefs?.has(i)) {
@@ -3020,7 +3067,7 @@ class PDFEditor {
    * Create an object stream containing the given objects.
    * @param {Ref} objStreamRef
    * @param {Array<Ref>} objRefs
-   * @param {RefSetCache} changes
+   * @param {RefMap} changes
    */
   async #createObjectStream(objStreamRef, objRefs, changes) {
     const streamBuffer = [""];

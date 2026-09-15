@@ -23,6 +23,7 @@ import {
 } from "../shared/util.js";
 import { Dict, isName, isRefsEqual, Name, Ref, RefSet } from "./primitives.js";
 import { BaseStream } from "./base_stream.js";
+import { CONTROL_CHAR_REGEXP } from "../shared/css_utils.js";
 import { stringToPDFString } from "./string_utils.js";
 
 const PDF_VERSION_REGEXP = /^[1-9]\.\d$/;
@@ -47,11 +48,11 @@ const RESOURCES_KEYS_TEXT_CONTENT = [
   "XObject",
 ];
 
-function getLookupTableFactory(initializer) {
+function getLookupTableFactory(initializer, useArray = false) {
   let lookup;
   return function () {
     if (initializer) {
-      lookup = Object.create(null);
+      lookup = useArray ? [] : Object.create(null);
       initializer(lookup);
       initializer = null;
     }
@@ -341,7 +342,8 @@ function lookupNormalRect(arr, fallback) {
  * each part of the path.
  */
 function parseXFAPath(path) {
-  const positionPattern = /(.+)\[(\d+)\]$/;
+  // Anchoring prevents retrying the match at every character.
+  const positionPattern = /^(.+)\[(\d+)\]$/;
   return path.split(".").map(component => {
     const m = component.match(positionPattern);
     if (m) {
@@ -449,7 +451,7 @@ function _collectJS(entry, xref, list, parents) {
 }
 
 function collectActions(xref, dict, eventType) {
-  const actions = Object.create(null);
+  const actions = new Map();
   const additionalActionsDicts = getInheritableProperty({
     dict,
     key: "AA",
@@ -475,7 +477,7 @@ function collectActions(xref, dict, eventType) {
         const list = [];
         _collectJS(rawActionDict, xref, list, parents);
         if (list.length > 0) {
-          actions[action] = list;
+          actions.set(action, list);
         }
       }
     }
@@ -487,10 +489,10 @@ function collectActions(xref, dict, eventType) {
     const list = [];
     _collectJS(actionDict, xref, list, parents);
     if (list.length > 0) {
-      actions.Action = list;
+      actions.set("Action", list);
     }
   }
-  return Object.keys(actions).length ? actions : null;
+  return actions.size ? actions : null;
 }
 
 const XMLEntities = {
@@ -560,6 +562,17 @@ function validateFontName(fontFamily, mustWarn = false) {
       }
       return false;
     }
+    // A <string> is terminated by a newline, which for CSS also includes the
+    // form feed character; see https://drafts.csswg.org/css-syntax/#newline.
+    // The font family is escaped before being used, see `serializeFontFamily`,
+    // hence this only prevents values that cannot sensibly name a font from
+    // being used at all (the unquoted case below is already this strict).
+    if (CONTROL_CHAR_REGEXP.test(fontFamily)) {
+      if (mustWarn) {
+        warn(`FontFamily contains control characters: ${fontFamily}.`);
+      }
+      return false;
+    }
   } else {
     // See https://developer.mozilla.org/en-US/docs/Web/CSS/custom-ident.
     for (const ident of fontFamily.split(/[ \t]+/)) {
@@ -572,6 +585,18 @@ function validateFontName(fontFamily, mustWarn = false) {
     }
   }
   return true;
+}
+
+// Strip the spaces preceding a digit, since e.g. "Wingdings 3" is not a valid
+// font name in the css specs.
+// The optional trailing digit is matched as part of the space run, so that a
+// failing match cannot backtrack over the spaces; otherwise the replacement
+// would be quadratic in the number of consecutive spaces.
+function normalizeCSSFontFamily(fontFamily) {
+  return fontFamily.replaceAll(
+    /( +)(\d)?/g,
+    (_, spaces, digit) => digit ?? " "
+  );
 }
 
 function validateCSSFont(cssFontInfo) {
@@ -750,6 +775,7 @@ export {
   lookupRect,
   MAX_INT_32,
   MissingDataException,
+  normalizeCSSFontFamily,
   numberToString,
   ParserEOFException,
   parseXFAPath,

@@ -534,6 +534,16 @@ const defaultOptions = new Map([
     },
   ],
   [
+    // Import Firefox design-system tokens and enable Nova viewer styles. The
+    // Nova overrides also require browser.nova.enabled.
+    "enableNova",
+    {
+      /** @type {boolean} */
+      value: true,
+      kind: OptionKind.VIEWER + OptionKind.PREFERENCE,
+    },
+  ],
+  [
     "enableOptimizedPartialRendering",
     {
       /** @type {boolean} */
@@ -1232,16 +1242,14 @@ class AppOptions {
         continue;
       }
       if (this.eventBus && kind & OptionKind.EVENT_DISPATCH) {
-        (events ||= new Map()).set(name, userOpt);
+        (events ??= new Map()).set(name, userOpt);
       }
       this.#opts.set(name, userOpt);
     }
 
-    if (events) {
-      for (const [name, value] of events) {
-        this.eventBus.dispatch(name.toLowerCase(), { source: this, value });
-      }
-    }
+    events?.forEach((value, name) => {
+      this.eventBus.dispatch(name.toLowerCase(), { source: this, value });
+    });
   }
 }
 

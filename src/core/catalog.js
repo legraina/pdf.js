@@ -19,6 +19,7 @@ import {
   DocumentActionEventType,
   FormatError,
   info,
+  makeArr,
   PermissionFlag,
   shadow,
   stringToUTF8String,
@@ -41,8 +42,8 @@ import {
   isRefsEqual,
   Name,
   Ref,
+  RefMap,
   RefSet,
-  RefSetCache,
 } from "./primitives.js";
 import { GlobalColorSpaceCache, GlobalImageCache } from "./image_utils.js";
 import { NameTree, NumberTree } from "./name_number_tree.js";
@@ -119,7 +120,7 @@ function fetchRemoteDest(action) {
 class Catalog {
   #actualNumPages = null;
 
-  #annotationAttachmentIdByRef = new RefSetCache();
+  #annotationAttachmentIdByRef = new RefMap();
 
   #annotationAttachmentRefById = new Map();
 
@@ -129,7 +130,7 @@ class Catalog {
 
   builtInCMapCache = new Map();
 
-  fontCache = new RefSetCache();
+  fontCache = new RefMap();
 
   globalColorSpaceCache = new GlobalColorSpaceCache();
 
@@ -137,11 +138,11 @@ class Catalog {
 
   nonBlendModesSet = new RefSet();
 
-  pageDictCache = new RefSetCache();
+  pageDictCache = new RefMap();
 
-  pageIndexCache = new RefSetCache();
+  pageIndexCache = new RefMap();
 
-  pageKidsCountCache = new RefSetCache();
+  pageKidsCountCache = new RefMap();
 
   standardFontDataCache = new Map();
 
@@ -334,19 +335,12 @@ class Catalog {
     if (!(obj instanceof Dict)) {
       return null;
     }
+    const markInfo = new Map();
 
-    const markInfo = {
-      Marked: false,
-      UserProperties: false,
-      Suspects: false,
-    };
-    for (const key in markInfo) {
-      const value = obj.get(key);
-      if (typeof value === "boolean") {
-        markInfo[key] = value;
-      }
+    for (const key of ["Marked", "UserProperties", "Suspects"]) {
+      const val = obj.get(key);
+      markInfo.set(key, typeof val === "boolean" ? val : false);
     }
-
     return markInfo;
   }
 
@@ -523,11 +517,10 @@ class Catalog {
     // complement binary integer so we can use regular bitwise operations on it.
     flags += 2 ** 32;
 
-    const permissions = [];
-    for (const key in PermissionFlag) {
-      const value = PermissionFlag[key];
+    const permissions = new Set();
+    for (const value of Object.values(PermissionFlag)) {
       if (flags & value) {
-        permissions.push(value);
+        permissions.add(value);
       }
     }
     return permissions;
@@ -548,7 +541,7 @@ class Catalog {
       if (!Array.isArray(groupsData)) {
         return shadow(this, "optionalContentConfig", null);
       }
-      const groupRefCache = new RefSetCache();
+      const groupRefCache = new RefMap();
       // Ensure all the optional content groups are valid.
       for (const groupRef of groupsData) {
         if (!(groupRef instanceof Ref) || groupRefCache.has(groupRef)) {
@@ -926,13 +919,9 @@ class Catalog {
         case "A":
         case "a":
           const LIMIT = 26; // Use only the characters A-Z, or a-z.
-          const A_UPPER_CASE = 0x41,
-            A_LOWER_CASE = 0x61;
-
-          const baseCharCode = style === "a" ? A_LOWER_CASE : A_UPPER_CASE;
           const letterIndex = currentIndex - 1;
           const character = String.fromCharCode(
-            baseCharCode + (letterIndex % LIMIT)
+            style.charCodeAt(0) + (letterIndex % LIMIT)
           );
           currentLabel = character.repeat(Math.floor(letterIndex / LIMIT) + 1);
           break;
@@ -1295,10 +1284,10 @@ class Catalog {
     );
 
     if (javaScript) {
-      actions ??= Object.create(null);
+      actions ??= new Map();
 
       for (const [key, val] of javaScript) {
-        (actions[key] ??= []).push(val);
+        actions.getOrInsertComputed(key, makeArr).push(val);
       }
     }
     return shadow(this, "jsActions", actions);

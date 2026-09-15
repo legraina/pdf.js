@@ -49,16 +49,17 @@ function isWhitespaceString(s) {
 
 class XMLParserBase {
   static get _entityRegex() {
-    return shadow(this, "_entityRegex", /&(?:#x([^;]+)|#([^;]+)|([^;]+));/g);
+    // Entity references cannot contain "&", keeping the scan linear.
+    return shadow(this, "_entityRegex", /&(?:#x([^;&]+)|#([^;&]+)|([^;&]+));/g);
   }
 
   _resolveEntities(s) {
-    return s.replaceAll(XMLParserBase._entityRegex, (_, hex, dec, entity) => {
-      if (hex) {
-        return String.fromCodePoint(parseInt(hex, 16));
-      }
-      if (dec) {
-        return String.fromCodePoint(parseInt(dec, 10));
+    return s.replaceAll(XMLParserBase._entityRegex, (all, hex, dec, entity) => {
+      if (hex || dec) {
+        const code = hex ? parseInt(hex, 16) : parseInt(dec, 10);
+        // An out-of-range or unparsable code point is kept as-is, since
+        // `String.fromCodePoint` would throw on it.
+        return code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : all;
       }
       switch (entity) {
         case "lt":
@@ -324,10 +325,9 @@ class SimpleDOMNode {
   }
 
   get textContent() {
-    if (!this.childNodes) {
-      return this.nodeValue || "";
-    }
-    return this.childNodes.map(child => child.textContent).join("");
+    return !this.childNodes
+      ? this.nodeValue || ""
+      : this.childNodes.map(child => child.textContent).join("");
   }
 
   get children() {

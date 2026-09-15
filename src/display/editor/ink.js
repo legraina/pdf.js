@@ -21,7 +21,11 @@ import {
 } from "../../shared/util.js";
 import { DrawingEditor, DrawingOptions } from "./draw.js";
 import { InkDrawOutline, InkDrawOutliner } from "./drawers/inkdraw.js";
-import { getPathsBBox, sweepCircleOverPaths } from "./eraser_utils.js";
+import {
+  getPathsBBox,
+  makeLayerTransform,
+  sweepCircleOverPaths,
+} from "./eraser_utils.js";
 import { AnnotationEditor } from "./editor.js";
 import { BasicColorPicker } from "./color_picker.js";
 import { InkAnnotationElement } from "../annotation_layer.js";
@@ -110,12 +114,12 @@ class InkEditor extends DrawingEditor {
   }
 
   /** @inheritdoc */
-  static createDrawerInstance(x, y, parentWidth, parentHeight, rotation) {
+  static createDrawerInstance({ x, y, box: [, , width, height], rotation }) {
     return new InkDrawOutliner(
       x,
       y,
-      parentWidth,
-      parentHeight,
+      width,
+      height,
       rotation,
       this._defaultDrawingOptions["stroke-width"]
     );
@@ -531,60 +535,13 @@ class InkEditor extends DrawingEditor {
     );
   }
 
-  /**
-   * Build the (exact, invertible) mapping between the PDF page coordinates
-   * used by the serialized ink points and the layer pixels used by the eraser.
-   */
-  #getLayerTransform({ width: layerW, height: layerH }) {
-    const [pageX, pageY] = this.pageTranslation;
-    const [pageW, pageH] = this.pageDimensions;
-
-    switch ((this.rotation || 0) % 360) {
-      case 90:
-        return {
-          toLayer: (px, py) => [
-            ((py - pageY) / pageH) * layerW,
-            ((px - pageX) / pageW) * layerH,
-          ],
-          toPage: (lx, ly) => [
-            pageX + (ly / layerH) * pageW,
-            pageY + (lx / layerW) * pageH,
-          ],
-        };
-      case 180:
-        return {
-          toLayer: (px, py) => [
-            (1 - (px - pageX) / pageW) * layerW,
-            ((py - pageY) / pageH) * layerH,
-          ],
-          toPage: (lx, ly) => [
-            pageX + (1 - lx / layerW) * pageW,
-            pageY + (ly / layerH) * pageH,
-          ],
-        };
-      case 270:
-        return {
-          toLayer: (px, py) => [
-            (1 - (py - pageY) / pageH) * layerW,
-            (1 - (px - pageX) / pageW) * layerH,
-          ],
-          toPage: (lx, ly) => [
-            pageX + (1 - ly / layerH) * pageW,
-            pageY + (1 - lx / layerW) * pageH,
-          ],
-        };
-      default:
-        return {
-          toLayer: (px, py) => [
-            ((px - pageX) / pageW) * layerW,
-            (1 - (py - pageY) / pageH) * layerH,
-          ],
-          toPage: (lx, ly) => [
-            pageX + (lx / layerW) * pageW,
-            pageY + (1 - ly / layerH) * pageH,
-          ],
-        };
-    }
+  #getLayerTransform(layerRect) {
+    return makeLayerTransform(
+      this.rotation,
+      layerRect,
+      this.pageTranslation,
+      this.pageDimensions
+    );
   }
 }
 

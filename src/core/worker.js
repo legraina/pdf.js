@@ -29,7 +29,7 @@ import {
   getNewAnnotationsMap,
   XRefParseException,
 } from "./core_utils.js";
-import { Dict, isDict, Ref, RefSetCache } from "./primitives.js";
+import { Dict, isDict, Ref, RefMap } from "./primitives.js";
 import { LocalPdfManager, NetworkPdfManager } from "./pdf_manager.js";
 import { MessageHandler, wrapReason } from "../shared/message_handler.js";
 import { AnnotationFactory } from "./annotation.js";
@@ -67,18 +67,20 @@ if (!Promise.allSettled) {
 }
 // end of modification ngx-extended-pdf-viewer #358
 class WorkerTask {
+  #capability = Promise.withResolvers();
+
+  terminated = false;
+
   constructor(name) {
     this.name = name;
-    this.terminated = false;
-    this._capability = Promise.withResolvers();
   }
 
   get finished() {
-    return this._capability.promise;
+    return this.#capability.promise;
   }
 
   finish() {
-    this._capability.resolve();
+    this.#capability.resolve();
   }
 
   terminate() {
@@ -552,7 +554,7 @@ class WorkerMessageHandler {
           }
           await Promise.all(pagePromises);
           const annotations = await Promise.all(annotationPromises);
-          return annotations.filter(a => !!a);
+          return annotations.filter(Boolean);
         } finally {
           if (task) {
             finishWorkerTask(task);
@@ -733,7 +735,7 @@ class WorkerMessageHandler {
           pdfManager.ensureDoc("xref"),
           pdfManager.ensureCatalog("structTreeRoot"),
         ];
-        const changes = new RefSetCache();
+        const changes = new RefMap();
         const promises = [];
 
         // #2943 modified by ngx-extended-pdf-viewer

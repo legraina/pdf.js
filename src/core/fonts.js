@@ -48,12 +48,14 @@ import {
   ZapfDingbatsEncoding,
 } from "./encodings.js";
 import {
+  getGlyphMapForMacOrderedFonts,
   getGlyphMapForStandardFonts,
   getNonStdFontMap,
   getSerifFonts,
   getStdFontMap,
   getSupplementalGlyphMapForArialBlack,
   getSupplementalGlyphMapForCalibri,
+  getSupplementalGlyphMapForTrebuchetMS,
 } from "./standard_fonts.js";
 import { GlyfTable, pruneCompositeGlyphCycles } from "./glyf.js";
 import { IdentityToUnicodeMap, ToUnicodeMap } from "./to_unicode_map.js";
@@ -62,6 +64,7 @@ import { compileFontInfo } from "./obj_bin_transform_core.js";
 import { DataBuilder } from "./data_builder.js";
 import { FontRendererFactory } from "./font_renderer.js";
 import { getFontBasicMetrics } from "./metrics.js";
+import { getLookupTableFactory } from "./core_utils.js";
 import { OpenTypeFileBuilder } from "./opentype_file_builder.js";
 import { Stream } from "./stream.js";
 import { Type1Font } from "./type1_font.js";
@@ -386,6 +389,21 @@ function applyStandardFontGlyphMap(map, glyphMap) {
     map[+charCode] = glyphMap[charCode];
   }
 }
+
+// The glyphs of the (Windows) Symbol font are ordered by char code, hence build
+// an encoding indexed by glyph id; note that the char codes 0x7F-0xA0 are
+// unused and that the glyph ids 0-2 are `.notdef`/`.null`/`nonmarkingreturn`.
+const getSymbolGlyphIdEncoding = getLookupTableFactory(t => {
+  let glyphId = 3;
+  for (const [firstCharCode, lastCharCode] of [
+    [0x20, 0x7e],
+    [0xa1, 0xfe],
+  ]) {
+    for (let charCode = firstCharCode; charCode <= lastCharCode; charCode++) {
+      t[glyphId++] = SymbolSetEncoding[charCode];
+    }
+  }
+}, /* useArray = */ true);
 
 function buildToFontChar(encoding, glyphsUnicodeMap, differences) {
   const toFontChar = [];
@@ -948,7 +966,7 @@ function createNameTable(name, proto) {
     proto[0][8] || "Unknown", // 8.Manufacturer
     proto[0][9] || "Unknown", // 9.Designer
   ];
-  const stringsBytes = strings.map(s => stringToBytes(s));
+  const stringsBytes = strings.map(stringToBytes);
 
   // Mac want 1-byte per character strings while Windows want
   // 2-bytes per character, so duplicate the names table
@@ -1288,12 +1306,22 @@ class Font {
       // Standard fonts might be embedded as CID font without glyph mapping.
       // Building one based on GlyphMapForStandardFonts.
       const map = [];
-      applyStandardFontGlyphMap(map, getGlyphMapForStandardFonts());
+      if (/Trebuchet/i.test(name)) {
+        // TrebuchetMS doesn't share the glyph ordering of the standard fonts,
+        // hence using the latter would map e.g. "š" to "ž" (issue 21713).
+        applyStandardFontGlyphMap(map, getGlyphMapForMacOrderedFonts());
+        applyStandardFontGlyphMap(map, getSupplementalGlyphMapForTrebuchetMS());
+      } else {
+        applyStandardFontGlyphMap(map, getGlyphMapForStandardFonts());
 
-      if (/Arial-?Black/i.test(name)) {
-        applyStandardFontGlyphMap(map, getSupplementalGlyphMapForArialBlack());
-      } else if (/Calibri/i.test(name)) {
-        applyStandardFontGlyphMap(map, getSupplementalGlyphMapForCalibri());
+        if (/Arial-?Black/i.test(name)) {
+          applyStandardFontGlyphMap(
+            map,
+            getSupplementalGlyphMapForArialBlack()
+          );
+        } else if (/Calibri/i.test(name)) {
+          applyStandardFontGlyphMap(map, getSupplementalGlyphMapForCalibri());
+        }
       }
 
       // Always update the glyph mapping with the `cidToGidMap` when it exists
@@ -1329,8 +1357,13 @@ class Font {
       this.toFontChar = map;
       this.toUnicode = new ToUnicodeMap(map);
     } else if (/Symbol/i.test(fontName)) {
+      // The non-embedded SymbolMT font in issue 21523 uses Identity encoding
+      // and an Identity CIDToGIDMap, hence its CIDs are glyph ids.
+      const isCidKeyed =
+        this.composite && this.cidEncoding.startsWith("Identity-");
+
       this.toFontChar = buildToFontChar(
-        SymbolSetEncoding,
+        isCidKeyed ? getSymbolGlyphIdEncoding() : SymbolSetEncoding,
         getGlyphsUnicode(),
         this.differences
       );

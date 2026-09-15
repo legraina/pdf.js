@@ -884,6 +884,9 @@ class PDFPageView extends BasePDFPageView {
       }
     }
     this.cssTransform({});
+    // Drawings stay visible in the unrotated canvas wrapper while the other
+    // kept layers are hidden, so reposition them before reset().
+    this.annotationEditorLayer?.update(this.viewport);
     this.reset({
       keepAnnotationLayer: true,
       keepAnnotationEditorLayer: true,
@@ -960,9 +963,14 @@ class PDFPageView extends BasePDFPageView {
     if (this.structTreeLayer && !this.textLayer) {
       this.structTreeLayer = null;
     }
+    // The annotation editor layer and the draw layer keep references on the
+    // text layer (the latter uses its div in order to render the selection),
+    // hence they must be recreated too.
     if (
       this.annotationEditorLayer &&
-      (!keepAnnotationEditorLayer || !this.annotationEditorLayer.div)
+      (!keepAnnotationEditorLayer ||
+        !this.annotationEditorLayer.div ||
+        !this.textLayer)
     ) {
       if (this.drawLayer) {
         this.drawLayer.cancel();
@@ -970,6 +978,10 @@ class PDFPageView extends BasePDFPageView {
       }
       this.annotationEditorLayer.cancel();
       this.annotationEditorLayer = null;
+    }
+    if (this.drawLayer && !this.textLayer) {
+      this.drawLayer.cancel();
+      this.drawLayer = null;
     }
     if (this.xfaLayer && (!keepXfaLayer || !this.xfaLayer.div)) {
       this.xfaLayer.cancel();

@@ -139,6 +139,15 @@ class AnnotationEditorLayerBuilder {
     this.show();
   }
 
+  /** @param {PageViewport} viewport */
+  update(viewport) {
+    if (this.div) {
+      this.annotationEditorLayer.update({
+        viewport: viewport.clone({ dontFlip: true }),
+      });
+    }
+  }
+
   cancel() {
     this._cancelled = true;
 

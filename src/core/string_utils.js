@@ -16,19 +16,15 @@
 import { stringToBytes, Util, warn } from "../shared/util.js";
 
 function isAscii(str) {
-  return (
-    typeof str === "string" &&
-    // eslint-disable-next-line no-control-regex
-    (!str || /^[\x00-\x7F]*$/.test(str))
-  );
+  // eslint-disable-next-line no-control-regex
+  return typeof str === "string" && (!str || /^[\x00-\x7F]*$/.test(str));
 }
 
 // If the string is null or undefined then it is returned as is.
 function stringToAsciiOrUTF16BE(str) {
-  if (str === null || str === undefined) {
-    return str;
-  }
-  return isAscii(str) ? str : stringToUTF16String(str, /* bigEndian = */ true);
+  return str === null || str === undefined || isAscii(str)
+    ? str
+    : stringToUTF16String(str, /* bigEndian = */ true);
 }
 
 function stringToUTF16HexString(str) {
@@ -66,6 +62,7 @@ const PDFStringTranslateTable = [
   0x2019, 0x201a, 0x2122, 0xfb01, 0xfb02, 0x141, 0x152, 0x160, 0x178, 0x17d,
   0x131, 0x142, 0x153, 0x161, 0x17e, 0, 0x20ac,
 ];
+const PDFStringTextDecoders = Object.create(null);
 
 function stringToPDFString(str, keepEscapeSequence = false) {
   // See section 7.9.2.2 Text String Type.
@@ -89,7 +86,10 @@ function stringToPDFString(str, keepEscapeSequence = false) {
 
     if (encoding) {
       try {
-        const decoder = new TextDecoder(encoding, { fatal: true });
+        const decoder = (PDFStringTextDecoders[encoding] ??= new TextDecoder(
+          encoding,
+          { fatal: true }
+        ));
         const buffer = stringToBytes(str);
         const decoded = decoder.decode(buffer);
         if (keepEscapeSequence || !decoded.includes("\x1b")) {

@@ -833,6 +833,8 @@ class AnnotationEditorUIManager {
 
   #savedAllLayers = null;
 
+  #savedEditorsByPage = null;
+
   #altTextManager = null;
 
   #annotationStorage = null;
@@ -1835,6 +1837,12 @@ class AnnotationEditorUIManager {
   }
 
   dragOver(event) {
+    // #3267 modified by ngx-extended-pdf-viewer: the listener is registered on
+    // `document` as soon as the manager exists, but the editor types are only
+    // known once the first editor layer has been created.
+    if (!this.#editorTypes) {
+      return;
+    }
     for (const { type } of event.dataTransfer.items) {
       for (const editorType of this.#editorTypes) {
         if (editorType.isHandlingMimeForPasting(type)) {
@@ -1851,6 +1859,9 @@ class AnnotationEditorUIManager {
    * @param {DragEvent} event
    */
   drop(event) {
+    if (!this.#editorTypes) {
+      return; // #3267 modified by ngx-extended-pdf-viewer
+    }
     for (const item of event.dataTransfer.items) {
       for (const editorType of this.#editorTypes) {
         if (editorType.isHandlingMimeForPasting(item.type)) {
@@ -1906,6 +1917,9 @@ class AnnotationEditorUIManager {
   async paste(event) {
     event.preventDefault();
     const { clipboardData } = event;
+    if (!this.#editorTypes) {
+      return; // #3267 modified by ngx-extended-pdf-viewer
+    }
     for (const item of clipboardData.items) {
       for (const editorType of this.#editorTypes) {
         if (editorType.isHandlingMimeForPasting(item.type)) {
@@ -2101,7 +2115,7 @@ class AnnotationEditorUIManager {
   }
 
   updatePageIndex(oldPageIndex, newPageIndex) {
-    for (const editor of this.getEditors(oldPageIndex)) {
+    for (const editor of this.#savedEditorsByPage.get(oldPageIndex) || []) {
       editor.pageIndex = newPageIndex;
     }
     const layer = this.#savedAllLayers.get(oldPageIndex);
@@ -2119,10 +2133,32 @@ class AnnotationEditorUIManager {
   startUpdatePages() {
     this.#savedAllLayers = new Map(this.#allLayers);
     this.#allLayers.clear();
+
+    const savedEditorsByPage = (this.#savedEditorsByPage = new Map());
+    const saveEditor = editor => {
+      savedEditorsByPage
+        .getOrInsertComputed(editor.pageIndex, makeArr)
+        .push(editor);
+    };
+    for (const editor of this.#allEditors.values()) {
+      saveEditor(editor);
+    }
+    // Clones are initially kept serialized until their editor layer is
+    // rendered, hence they're not present in #allEditors yet.
+    for (const [id, editor] of this.#annotationStorage) {
+      if (
+        id.startsWith(AnnotationEditorPrefix) &&
+        !this.#allEditors.has(id) &&
+        Number.isInteger(editor?.pageIndex)
+      ) {
+        saveEditor(editor);
+      }
+    }
   }
 
   endUpdatePages() {
     this.#savedAllLayers = null;
+    this.#savedEditorsByPage = null;
   }
 
   clonePage(pageIndex, newPageIndex) {

@@ -890,6 +890,16 @@ class PartialEvaluator {
     }
   }
 
+  #createTransferMap(fn) {
+    const transferFn = this._pdfFunctionFactory.create(fn),
+      tmp = new Float32Array(1);
+    return Uint8Array.from({ length: 256 }, (_, i) => {
+      tmp[0] = i / 255;
+      transferFn(tmp, 0, tmp, 0);
+      return (tmp[0] * 255) | 0;
+    });
+  }
+
   handleSMask(
     smask,
     resources,
@@ -909,15 +919,7 @@ class PartialEvaluator {
     // we will build a map of integer values in range 0..255 to be fast.
     const transferObj = smask.get("TR");
     if (isPDFFunction(transferObj)) {
-      const transferFn = this._pdfFunctionFactory.create(transferObj);
-      const transferMap = new Uint8Array(256);
-      const tmp = new Float32Array(1);
-      for (let i = 0; i < 256; i++) {
-        tmp[0] = i / 255;
-        transferFn(tmp, 0, tmp, 0);
-        transferMap[i] = (tmp[0] * 255) | 0;
-      }
-      smaskOptions.transferMap = transferMap;
+      smaskOptions.transferMap = this.#createTransferMap(transferObj);
     }
 
     return this.buildFormXObject(
@@ -935,12 +937,9 @@ class PartialEvaluator {
   handleTransferFunction(tr) {
     let transferArray;
     if (Array.isArray(tr)) {
-      transferArray = tr;
-      if (tr.length > 1 && tr.every(map => map === tr[0])) {
-        // All entries in the array are the same, so we can just use one of
-        // them.
-        transferArray = [tr[0]];
-      }
+      // If all entries in the array are the same, we can just use one of them.
+      transferArray =
+        tr.length > 1 && tr.every(map => map === tr[0]) ? [tr[0]] : tr;
     } else if (isPDFFunction(tr)) {
       transferArray = [tr];
     } else {
@@ -960,16 +959,7 @@ class PartialEvaluator {
       } else if (!isPDFFunction(transferObj)) {
         return null; // Not a valid transfer function object.
       }
-
-      const transferFn = this._pdfFunctionFactory.create(transferObj);
-      const transferMap = new Uint8Array(256),
-        tmp = new Float32Array(1);
-      for (let j = 0; j < 256; j++) {
-        tmp[0] = j / 255;
-        transferFn(tmp, 0, tmp, 0);
-        transferMap[j] = (tmp[0] * 255) | 0;
-      }
-      transferMaps.push(transferMap);
+      transferMaps.push(this.#createTransferMap(transferObj));
       numEffectfulFns++;
     }
 
@@ -1202,12 +1192,13 @@ class PartialEvaluator {
           }
           break;
         case "TR":
-        case "TR2": {
           // TR2 takes precedence over TR (see PDF 32000-1:2008, Table 58), so
           // ignore TR when a TR2 entry is present in the same dictionary.
-          if (key === "TR" && gState.has("TR2")) {
+          if (gState.has("TR2")) {
             break;
           }
+        /* falls through */
+        case "TR2": {
           // For TR2 the name /Default denotes "the transfer function that was
           // in effect at the start of the page" (PDF 32000-1:2008, Table 58).
           // A page always starts with the identity transfer function, hence
@@ -1361,7 +1352,7 @@ class PartialEvaluator {
     // Workaround for bad PDF generators that reference fonts incorrectly,
     // where `fontRef` is a `Dict` rather than a `Ref` (fixes bug946506.pdf).
     // In this case we cannot put the font into `this.fontCache` (which is
-    // a `RefSetCache`), since it's not possible to use a `Dict` as a key.
+    // a `RefMap`), since it's not possible to use a `Dict` as a key.
     //
     // However, if we don't cache the font it's not possible to remove it
     // when `cleanup` is triggered from the API, which causes issues on
@@ -1370,8 +1361,8 @@ class PartialEvaluator {
     //
     // Instead, we cheat a bit by using a modified `fontID` as a key in
     // `this.fontCache`, to allow the font to be cached.
-    // NOTE: This works because `RefSetCache` calls `toString()` on provided
-    //       keys. Also, since `fontRef` is used when getting cached fonts,
+    // NOTE: This works because `RefMap` calls `toString()` on provided keys.
+    //       Also, since `fontRef` is used when getting cached fonts,
     //       we'll not accidentally match fonts cached with the `fontID`.
     if (fontRefIsRef) {
       this.fontCache.put(fontRef, promise);
@@ -1724,10 +1715,17 @@ class PartialEvaluator {
     const stateManager = new StateManager(initialState);
     const preprocessor = new EvaluatorPreprocessor(stream, xref, stateManager);
     const timeSlotManager = new TimeSlotManager();
+    let markedContentLevel = 0;
 
     function closePendingRestoreOPS(argument) {
       for (let i = 0, ii = preprocessor.savedStatesDepth; i < ii; i++) {
         operatorList.addOp(OPS.restore, []);
+      }
+    }
+
+    function closePendingMarkedContentOPS() {
+      for (; markedContentLevel > 0; markedContentLevel--) {
+        operatorList.addOp(OPS.endMarkedContent, []);
       }
     }
 
@@ -1745,7 +1743,7 @@ class PartialEvaluator {
       timeSlotManager.reset();
 
       const operation = {};
-      let stop, i, ii, cs, name, isValidName;
+      let stop, cs, name, isValidName;
       while (!(stop = timeSlotManager.check())) {
         // The arguments parsed by read() are used beyond this loop, so we
         // cannot reuse the same array on each iteration. Therefore we pass
@@ -2303,6 +2301,7 @@ class PartialEvaluator {
             // but doing so is meaningless without knowing the semantics.
             continue;
           case OPS.beginMarkedContentProps:
+            markedContentLevel++;
             if (!(args[0] instanceof Name)) {
               warn(`Expected name for beginMarkedContentProps arg0=${args[0]}`);
               operatorList.addOp(OPS.beginMarkedContentProps, ["OC", null]);
@@ -2337,7 +2336,7 @@ class PartialEvaluator {
               );
               return;
             }
-            // Other marked content types aren't supported yet.
+            // Preserve only the MCID from non-OC property dictionaries.
             args = [
               args[0].name,
               args[1] instanceof Dict ? args[1].get("MCID") : null,
@@ -2345,21 +2344,27 @@ class PartialEvaluator {
 
             break;
           case OPS.beginMarkedContent:
+            if (args?.some(arg => arg instanceof Dict)) {
+              warn(`getOperatorList - ignoring operator: ${fn}`);
+              continue;
+            }
+            markedContentLevel++;
+            break;
           case OPS.endMarkedContent:
+            if (args?.some(arg => arg instanceof Dict)) {
+              warn(`getOperatorList - ignoring operator: ${fn}`);
+              continue;
+            }
+            if (markedContentLevel === 0) {
+              continue;
+            }
+            markedContentLevel--;
+            break;
           default:
-            // Note: Ignore the operator if it has `Dict` arguments, since
-            // those are non-serializable, otherwise postMessage will throw
-            // "An object could not be cloned.".
-            if (args !== null) {
-              for (i = 0, ii = args.length; i < ii; i++) {
-                if (args[i] instanceof Dict) {
-                  break;
-                }
-              }
-              if (i < ii) {
-                warn("getOperatorList - ignoring operator: " + fn);
-                continue;
-              }
+            // Avoid postMessage errors from `Dict` arguments.
+            if (args?.some(arg => arg instanceof Dict)) {
+              warn(`getOperatorList - ignoring operator: ${fn}`);
+              continue;
             }
         }
         operatorList.addOp(fn, args);
@@ -2368,8 +2373,8 @@ class PartialEvaluator {
         next(deferred);
         return;
       }
-      // Some PDFs don't close all restores inside object/form.
-      // Closing those for them.
+      // Close marked content and graphics states left open by this stream.
+      closePendingMarkedContentOPS();
       closePendingRestoreOPS();
       resolve();
     }).catch(reason => {
@@ -2382,6 +2387,7 @@ class PartialEvaluator {
             `task: "${reason}".`
         );
 
+        closePendingMarkedContentOPS();
         closePendingRestoreOPS();
         return;
       }
@@ -2399,7 +2405,6 @@ class PartialEvaluator {
     seenStyles = new Set(),
     viewBox,
     lang = null,
-    markedContentData = null,
     disableNormalization = false,
     keepWhiteSpace = false,
     prevRefs = null,
@@ -2429,9 +2434,8 @@ class PartialEvaluator {
     resources ||= Dict.empty;
     stateManager ||= new StateManager(new TextState());
 
-    if (includeMarkedContent) {
-      markedContentData ||= { level: 0 };
-    }
+    let markedContentLevel = 0;
+    let textMarkedContentLevel = null;
 
     const textContent = {
       items: [],
@@ -3177,6 +3181,19 @@ class PartialEvaluator {
       textContentItem.str.length = 0;
     }
 
+    function closePendingMarkedContentItems(level = 0) {
+      if (!includeMarkedContent || markedContentLevel <= level) {
+        return;
+      }
+      flushTextContentItem();
+
+      for (; markedContentLevel > level; markedContentLevel--) {
+        textContent.items.push({
+          type: "endMarkedContent",
+        });
+      }
+    }
+
     function enqueueChunk(batch = false) {
       const length = textContent.items.length;
       if (length === 0) {
@@ -3295,6 +3312,13 @@ class PartialEvaluator {
           case OPS.beginText:
             textState.textMatrix = IDENTITY_MATRIX.slice();
             textState.textLineMatrix = IDENTITY_MATRIX.slice();
+            textMarkedContentLevel = markedContentLevel;
+            break;
+          case OPS.endText:
+            if (textMarkedContentLevel !== null) {
+              closePendingMarkedContentItems(textMarkedContentLevel);
+              textMarkedContentLevel = null;
+            }
             break;
           case OPS.showSpacedText:
             if (!stateManager.state.font) {
@@ -3455,7 +3479,6 @@ class PartialEvaluator {
                     seenStyles,
                     viewBox,
                     lang,
-                    markedContentData,
                     disableNormalization,
                     keepWhiteSpace,
                     prevRefs: seenRefs,
@@ -3539,7 +3562,7 @@ class PartialEvaluator {
           case OPS.beginMarkedContent:
             flushTextContentItem();
             if (includeMarkedContent) {
-              markedContentData.level++;
+              markedContentLevel++;
 
               textContent.items.push({
                 type: "beginMarkedContent",
@@ -3550,7 +3573,7 @@ class PartialEvaluator {
           case OPS.beginMarkedContentProps:
             flushTextContentItem();
             if (includeMarkedContent) {
-              markedContentData.level++;
+              markedContentLevel++;
 
               const mcid = args[1] instanceof Dict ? args[1].get("MCID") : null;
               textContent.items.push({
@@ -3565,12 +3588,11 @@ class PartialEvaluator {
           case OPS.endMarkedContent:
             flushTextContentItem();
             if (includeMarkedContent) {
-              if (markedContentData.level === 0) {
-                // Handle unbalanced beginMarkedContent/endMarkedContent
-                // operators (fixes issue15629.pdf).
+              if (markedContentLevel === 0) {
+                // Ignore unmatched EMC operators (issue 15629).
                 break;
               }
-              markedContentData.level--;
+              markedContentLevel--;
 
               textContent.items.push({
                 type: "endMarkedContent",
@@ -3589,6 +3611,7 @@ class PartialEvaluator {
         return;
       }
       flushTextContentItem();
+      closePendingMarkedContentItems();
       enqueueChunk();
       resolve();
     }).catch(reason => {
@@ -3603,6 +3626,7 @@ class PartialEvaluator {
         );
 
         flushTextContentItem();
+        closePendingMarkedContentItems();
         enqueueChunk();
         return;
       }
@@ -4890,12 +4914,15 @@ class TranslatedFont {
     );
   }
 
-  loadType3Data(evaluator, resources, task, seenRefs = null) {
+  async loadType3Data(evaluator, resources, task, seenRefs = null) {
     if (this.#type3Loaded) {
       return this.#type3Loaded;
     }
-    const { font, type3Dependencies } = this;
+    const { dict, font, type3Dependencies } = this;
     assert(font.isType3Font, "Must be a Type3 font.");
+
+    const { promise, resolve } = Promise.withResolvers();
+    this.#type3Loaded = promise;
 
     // When parsing Type3 glyphs, always ignore them if there are errors.
     // Compared to the parsing of e.g. an entire page, it doesn't really
@@ -4903,70 +4930,63 @@ class TranslatedFont {
     const type3Evaluator = evaluator.clone({ ignoreErrors: false });
     // Prevent circular references in Type3 fonts.
     const type3FontRefs = new RefSet(evaluator.type3FontRefs);
-    if (this.dict.objId && !type3FontRefs.has(this.dict.objId)) {
-      type3FontRefs.put(this.dict.objId);
+    if (dict.objId) {
+      type3FontRefs.put(dict.objId);
     }
     type3Evaluator.type3FontRefs = type3FontRefs;
 
-    let loadCharProcsPromise = Promise.resolve();
-    const charProcs = this.dict.get("CharProcs");
-    const fontResources = this.dict.get("Resources") || resources;
-    const charProcOperatorList = Object.create(null);
+    const charProcs = dict.get("CharProcs");
+    const fontResources = dict.get("Resources") || resources;
+    const charProcOperatorList = new Map();
 
-    const [x0, y0, x1, y1] = font.bbox,
-      width = x1 - x0,
-      height = y1 - y0;
-    const fontBBoxSize = Math.hypot(width, height);
+    const [x0, y0, x1, y1] = font.bbox;
+    const fontBBoxSize = Math.hypot(x1 - x0, y1 - y0);
 
     for (const key of charProcs.getKeys()) {
-      loadCharProcsPromise = loadCharProcsPromise.then(() => {
-        const glyphStream = charProcs.get(key);
+      try {
         const operatorList = new OperatorList();
-        return type3Evaluator
-          .getOperatorList({
-            stream: glyphStream,
-            task,
-            resources: fontResources,
-            operatorList,
-            prevRefs: seenRefs,
-          })
-          .then(() => {
-            // According to the PDF specification, section "9.6.5 Type 3 Fonts"
-            // and "Table 113":
-            //  "A glyph description that begins with the d1 operator should
-            //   not execute any operators that set the colour (or other
-            //   colour-related parameters) in the graphics state;
-            //   any use of such operators shall be ignored."
-            switch (operatorList.fnArray[0]) {
-              case OPS.setCharWidthAndBounds:
-                this.#removeType3ColorOperators(operatorList, fontBBoxSize);
-                break;
-              case OPS.setCharWidth:
-                if (!fontBBoxSize) {
-                  this.#guessType3FontBBox(operatorList);
-                }
-                break;
-            }
-            charProcOperatorList[key] = operatorList.getIR();
+        await type3Evaluator.getOperatorList({
+          stream: charProcs.get(key),
+          task,
+          resources: fontResources,
+          operatorList,
+          prevRefs: seenRefs,
+        });
 
-            for (const dependency of operatorList.dependencies) {
-              type3Dependencies.add(dependency);
+        // According to the PDF specification, section "9.6.5 Type 3 Fonts"
+        // and "Table 113":
+        //  "A glyph description that begins with the d1 operator should
+        //   not execute any operators that set the colour (or other
+        //   colour-related parameters) in the graphics state;
+        //   any use of such operators shall be ignored."
+        switch (operatorList.fnArray[0]) {
+          case OPS.setCharWidthAndBounds:
+            this.#removeType3ColorOperators(operatorList, fontBBoxSize);
+            break;
+          case OPS.setCharWidth:
+            if (!fontBBoxSize) {
+              this.#guessType3FontBBox(operatorList);
             }
-          })
-          .catch(function (reason) {
-            warn(`Type3 font resource "${key}" is not available.`);
-            const dummyOperatorList = new OperatorList();
-            charProcOperatorList[key] = dummyOperatorList.getIR();
-          });
-      });
-    }
-    this.#type3Loaded = loadCharProcsPromise.then(() => {
-      font.charProcOperatorList = charProcOperatorList;
-      if (this._bbox) {
-        font.isCharBBox = true;
-        font.bbox = this._bbox;
+            break;
+        }
+        charProcOperatorList.set(key, operatorList.getIR());
+
+        for (const dependency of operatorList.dependencies) {
+          type3Dependencies.add(dependency);
+        }
+      } catch {
+        warn(`Type3 font resource "${key}" is not available.`);
+        charProcOperatorList.set(key, new OperatorList().getIR());
       }
-    });
+    }
+
+    font.charProcOperatorList = charProcOperatorList;
+    if (this._bbox) {
+      font.isCharBBox = true;
+      font.bbox = this._bbox;
+    }
+
+    resolve();
     return this.#type3Loaded;
   }
 

@@ -284,10 +284,9 @@ class XFAObject {
   }
 
   [$text]() {
-    if (this[_children].length === 0) {
-      return this[$content];
-    }
-    return this[_children].map(c => c[$text]()).join("");
+    return this[_children].length === 0
+      ? this[$content]
+      : this[_children].map(c => c[$text]()).join("");
   }
 
   get [_attributeNames]() {
@@ -326,14 +325,6 @@ class XFAObject {
 
   [$getSubformParent]() {
     return this[$getParent]();
-  }
-
-  [$getChildren](name = null) {
-    if (!name) {
-      return this[_children];
-    }
-
-    return this[name];
   }
 
   [$dump]() {
@@ -680,11 +671,9 @@ class XFAObject {
   }
 
   [$getChildren](name = null) {
-    if (!name) {
-      return this[_children];
-    }
-
-    return this[_children].filter(c => c[$nodeName] === name);
+    return !name
+      ? this[_children]
+      : this[_children].filter(c => c[$nodeName] === name);
   }
 
   [$getChildrenByClass](name) {
@@ -906,14 +895,6 @@ class XmlObject extends XFAObject {
     }
 
     return HTMLResult.EMPTY;
-  }
-
-  [$getChildren](name = null) {
-    if (!name) {
-      return this[_children];
-    }
-
-    return this[_children].filter(c => c[$nodeName] === name);
   }
 
   [$getAttributes]() {
